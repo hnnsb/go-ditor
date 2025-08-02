@@ -50,8 +50,8 @@ var (
 
 // die prints an error message and exits the program, similar to the C version
 func die(s string) {
-	os.Stdout.Write([]byte("\x1b[2J")) // Clear the screen
-	os.Stdout.Write([]byte("\x1b[H"))  // Move cursor to the top-left corner
+	os.Stdout.Write([]byte(CLEAR_SCREEN)) // Clear the screen
+	os.Stdout.Write([]byte(CURSOR_HOME))  // Move cursor to the top-left corner
 
 	fmt.Fprintf(os.Stderr, "Error: %s\n", s)
 	os.Exit(1)
@@ -93,7 +93,8 @@ func editorReadKey() (int, error) {
 			return '\x1b', nil
 		}
 
-		if seq[0] == '[' {
+		switch seq[0] {
+		case '[':
 			if seq[1] >= '0' && seq[1] <= '9' {
 				if nread, err := os.Stdin.Read(seq[2:3]); nread != 1 || err != nil {
 					return '\x1b', nil
@@ -132,7 +133,7 @@ func editorReadKey() (int, error) {
 					return END_KEY, nil
 				}
 			}
-		} else if seq[0] == 'O' {
+		case 'O':
 			switch seq[1] {
 			case 'H':
 				return HOME_KEY, nil
@@ -155,7 +156,7 @@ func getWindowsSize(rows *int, cols *int) error {
 
 func getCursorPosition(row *int, col *int) error {
 	// Move cursor to the bottom-right corner and read the cursor position
-	os.Stdout.Write([]byte("\x1b[999;999H\x1b[6n"))
+	os.Stdout.Write([]byte(CURSOR_BOTTOM_RIGHT + CURSOR_GET_POSITION))
 	var buf [32]byte
 	n, err := os.Stdin.Read(buf[:])
 	if err != nil {
@@ -164,7 +165,7 @@ func getCursorPosition(row *int, col *int) error {
 
 	// Parse the response
 	var r, c int
-	fmt.Sscanf(string(buf[:n]), "\x1b[%d;%dR", &r, &c)
+	fmt.Sscanf(string(buf[:n]), CURSOR_RESPONSE_FORMAT, &r, &c)
 	*row = r - 1 // Convert to zero-based index
 	*col = c - 1 // Convert to zero-based index
 	return nil
@@ -210,7 +211,7 @@ func editorDrawRows(abuf *appendBuffer) {
 			abuf.append([]byte("~"))
 		}
 
-		abuf.append([]byte("\x1b[K")) // Clear line
+		abuf.append([]byte(CLEAR_LINE)) // Clear line
 		if y < E.screenRows-1 {
 			abuf.append([]byte("\r\n"))
 		}
@@ -220,14 +221,14 @@ func editorDrawRows(abuf *appendBuffer) {
 func editorRefreshScreen() {
 	var abuf appendBuffer
 
-	abuf.append([]byte("\x1b[?25l")) // Hide the cursor
-	abuf.append([]byte("\x1b[H"))    // Move cursor to the top-left corner
+	abuf.append([]byte(CURSOR_HIDE)) // Hide the cursor
+	abuf.append([]byte(CURSOR_HOME)) // Move cursor to the top-left corner
 
 	editorDrawRows(&abuf)
 
-	abuf.append(fmt.Appendf(nil, "\x1b[%d;%dH", E.cy+1, E.cx+1)) // Move cursor to the current position
+	abuf.append(fmt.Appendf(nil, CURSOR_POSITION_FORMAT, E.cy+1, E.cx+1)) // Move cursor to the current position
 
-	abuf.append([]byte("\x1b[?25h")) // Show the cursor again
+	abuf.append([]byte(CURSOR_SHOW)) // Show the cursor again
 
 	os.Stdout.Write(abuf.b)
 	abuf.free()
@@ -264,8 +265,8 @@ func editorProcessKeypress() {
 
 	switch key {
 	case ctrlKey('q'):
-		os.Stdout.Write([]byte("\x1b[2J")) // Clear the screen
-		os.Stdout.Write([]byte("\x1b[H"))  // Move cursor to the top-left corner
+		os.Stdout.Write([]byte(CLEAR_SCREEN)) // Clear the screen
+		os.Stdout.Write([]byte(CURSOR_HOME))  // Move cursor to the top-left corner
 		fmt.Println("Exiting GO-DITOR editor")
 		os.Exit(0)
 
