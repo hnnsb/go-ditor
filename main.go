@@ -287,7 +287,7 @@ func isSeparator(c int) bool {
 
 func editorUpdateSyntax(row *row) {
 	row.hl = make([]int, row.rsize)
-	for i := 0; i < row.rsize; i++ {
+	for i := range row.hl {
 		row.hl[i] = HL_NORMAL // Default to normal highlighting
 	}
 
@@ -402,7 +402,7 @@ func editorUpdateSyntax(row *row) {
 				if klen > 0 && i+klen <= row.rsize &&
 					bytes.Equal(row.render[i:i+klen], []byte(keywords[j][:klen])) &&
 					(i+klen >= row.rsize || isSeparator(int(row.render[i+klen]))) {
-					for k := 0; k < klen; k++ {
+					for k := range klen {
 						if is_kw2 {
 							row.hl[i+k] = HL_KEYWORD2
 						} else {
@@ -473,7 +473,7 @@ func editorSelectSyntaxHighlight() {
 				(!isExt && strings.Contains(filename, pattern)) {
 				E.syntax = s
 
-				for filerow := 0; filerow < E.numrows; filerow++ {
+				for filerow := range E.numrows {
 					editorUpdateSyntax(&E.row[filerow])
 				}
 				return
@@ -486,7 +486,7 @@ func editorSelectSyntaxHighlight() {
 
 func editorRowCxToRx(row *row, cx int) int {
 	rx := 0
-	for j := 0; j < cx; j++ {
+	for j := range cx {
 		if row.chars[j] == '\t' {
 			rx += TAB_STOP - (rx % TAB_STOP) // Expand tab to next TAB_STOP boundary
 		} else {
@@ -514,8 +514,8 @@ func editorRowRxToCx(row *row, rx int) int {
 
 func editorUpdateRow(row *row) {
 	tabs := 0
-	for j := 0; j < row.size; j++ {
-		if row.chars[j] == '\t' {
+	for _, char := range row.chars {
+		if char == '\t' {
 			tabs++
 		}
 	}
@@ -524,8 +524,8 @@ func editorUpdateRow(row *row) {
 	row.render = make([]byte, row.size+tabs*(TAB_STOP-1))
 
 	idx := 0
-	for j := 0; j < row.size; j++ {
-		if row.chars[j] == '\t' {
+	for _, char := range row.chars {
+		if char == '\t' {
 			row.render[idx] = ' '
 			idx++
 			// Add spaces until we reach the next TAB_STOP boundary
@@ -534,7 +534,7 @@ func editorUpdateRow(row *row) {
 				idx++
 			}
 		} else {
-			row.render[idx] = row.chars[j]
+			row.render[idx] = char
 			idx++
 		}
 	}
@@ -702,17 +702,17 @@ func editorDeleteChar() {
 
 func editorRowsToString(bufLen *int) []byte {
 	totalLength := 0
-	for j := 0; j < E.numrows; j++ {
-		totalLength += E.row[j].size + 1 // +1 for newline character
+	for _, row := range E.row {
+		totalLength += row.size + 1 // +1 for newline character
 	}
 	*bufLen = totalLength
 
 	buf := make([]byte, totalLength)
 	p := 0
 
-	for j := 0; j < E.numrows; j++ {
-		copy(buf[p:p+E.row[j].size], E.row[j].chars[:E.row[j].size])
-		p += E.row[j].size
+	for _, row := range E.row {
+		copy(buf[p:p+row.size], row.chars[:row.size])
+		p += row.size
 		buf[p] = '\n'
 		p++
 	}
@@ -829,7 +829,7 @@ func editorFindCallback(query []byte, key int) {
 	}
 	current := last_match
 
-	for i := 0; i < E.numrows; i++ {
+	for range E.numrows {
 		current += direction
 		if current == -1 {
 			current = E.numrows - 1
@@ -928,9 +928,8 @@ func editorDrawRows(abuf *appendBuffer) {
 					abuf.append([]byte("~"))
 					padding--
 				}
-				for padding > 0 {
+				for range padding {
 					abuf.append([]byte(" "))
-					padding--
 				}
 				abuf.append([]byte(welcome[:welcomelen]))
 			} else {
@@ -1206,18 +1205,14 @@ func editorProcessKeypress() {
 
 	case PAGE_UP:
 		E.cy = E.rowOffset
-		times := E.screenRows
-		for times > 0 {
+		for range E.screenRows {
 			editorMoveCursor(ARROW_UP)
-			times--
 		}
 
 	case PAGE_DOWN:
 		E.cy = min(E.rowOffset+E.screenRows-1, E.numrows)
-		times := E.screenRows
-		for times > 0 {
+		for range E.screenRows {
 			editorMoveCursor(ARROW_DOWN)
-			times--
 		}
 
 	case ARROW_LEFT, ARROW_RIGHT, ARROW_UP, ARROW_DOWN:
