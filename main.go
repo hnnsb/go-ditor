@@ -1,10 +1,14 @@
 package main
 
+/*
+asdf
+*/
 import (
 	"bufio"
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/term"
@@ -19,21 +23,44 @@ const (
 )
 
 const (
-	BACKSPACE   = 127 // ASCII backspace
-	ARROW_LEFT  = iota + 1000
-	ARROW_RIGHT = iota + 1000
-	ARROW_UP    = iota + 1000
-	ARROW_DOWN  = iota + 1000
-	DELETE_KEY  = iota + 1000
-	HOME_KEY    = iota + 1000
-	END_KEY     = iota + 1000
-	PAGE_UP     = iota + 1000
-	PAGE_DOWN   = iota + 1000
+	BACKSPACE  = 127 // ASCII backspace
+	ARROW_LEFT = iota + 1000
+	ARROW_RIGHT
+	ARROW_UP
+	ARROW_DOWN
+	DELETE_KEY
+	HOME_KEY
+	END_KEY
+	PAGE_UP
+	PAGE_DOWN
+)
+
+const (
+	// Syntax highlighting
+	HL_NORMAL = iota
+	HL_COMMENT
+	HL_MLCOMMENT
+	HL_KEYWORD1
+	HL_KEYWORD2
+	HL_STRING
+	HL_NUMBER
+	HL_MATCH
+)
+
+const (
+	// Syntax highlighting flags
+	HL_HIGHLIGHT_NUMBERS = 1 << 0
+	HL_HIGHLIGHT_STRINGS = 1 << 1
 )
 
 // Check if the byte is a control character
 func isControl(c byte) bool {
 	return c < 32 || c == 127
+}
+
+// Check if the byte is a digit character
+func isdigit(c byte) bool {
+	return c >= '0' && c <= '9'
 }
 
 func ctrlKey(c int) int {
@@ -42,11 +69,25 @@ func ctrlKey(c int) int {
 }
 
 /*** data ***/
+
+type editorSyntax struct {
+	filetype               string
+	filematch              []string
+	keywords               []string
+	singlelineCommentStart string
+	multilineCommentStart  string
+	multilineCommentEnd    string
+	flags                  int
+}
+
 type row struct {
-	size   int
-	chars  []byte
-	rsize  int
-	render []byte
+	idx             int
+	size            int
+	chars           []byte
+	rsize           int
+	render          []byte
+	hl              []int
+	hl_open_comment bool
 }
 
 type editorConfig struct {
@@ -62,12 +103,44 @@ type editorConfig struct {
 	filename          *string
 	statusMessage     string
 	statusMessageTime time.Time
+	syntax            *editorSyntax
 	originalState     *term.State
 }
 
 var (
 	E editorConfig // Global editor configuration
 )
+
+/*** filetypes ***/
+
+var HLDB_ENTRIES = []editorSyntax{
+	{
+		filetype:  "c",
+		filematch: []string{".c", ".h", ".cpp"},
+		keywords: []string{
+			"switch", "if", "while", "for", "break", "continue", "return", "else",
+			"struct", "union", "typedef", "static", "enum", "class", "case",
+			"int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
+			"void|"},
+		singlelineCommentStart: "//",
+		multilineCommentStart:  "/*",
+		multilineCommentEnd:    "*/",
+		flags:                  HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+	},
+	{
+		filetype:  "go",
+		filematch: []string{".go", ".mod", ".sum"},
+		keywords: []string{
+			"break", "case", "chan", "const", "continue", "default", "defer", "else",
+			"fallthrough", "for", "func|", "go", "goto", "if", "import", "interface",
+			"map", "package", "range", "return", "select", "struct", "switch", "type",
+			"var"},
+		singlelineCommentStart: "//",
+		multilineCommentStart:  "/*",
+		multilineCommentEnd:    "*/",
+		flags:                  HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+	},
+}
 
 /*** terminal ***/
 
@@ -195,6 +268,220 @@ func getCursorPosition(row *int, col *int) error {
 	return nil
 }
 
+/*** syntax highlighting ***/
+
+func isSeparator(c int) bool {
+	// Check if the character is a separator (whitespace, null, or punctuation)
+	if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f' || c == 0 {
+		return true
+	}
+	// Check for common programming punctuation separators
+	separators := ",.()+-/*=~%<>[];"
+	for _, sep := range separators {
+		if c == int(sep) {
+			return true
+		}
+	}
+	return false
+}
+
+func editorUpdateSyntax(row *row) {
+	row.hl = make([]int, row.rsize)
+	for i := 0; i < row.rsize; i++ {
+		row.hl[i] = HL_NORMAL // Default to normal highlighting
+	}
+
+	if E.syntax == nil {
+		return
+	}
+
+	keywords := E.syntax.keywords
+
+	scs := E.syntax.singlelineCommentStart
+	mcs := E.syntax.multilineCommentStart
+	mce := E.syntax.multilineCommentEnd
+
+	scs_len := len(scs)
+	mcs_len := len(mcs)
+	mce_len := len(mce)
+
+	prev_sep := true
+	var in_string byte = 0
+	var in_comment bool = row.idx > 0 && E.row[row.idx-1].hl_open_comment
+
+	for i := 0; i < row.rsize; {
+		c := row.render[i]
+		prev_hl := HL_NORMAL
+		if i > 0 {
+			prev_hl = row.hl[i-1]
+		}
+
+		if scs_len > 0 && in_string == 0 && !in_comment {
+			if bytes.HasPrefix(row.render[i:], []byte(scs)) {
+				for j := i; j < row.rsize; j++ {
+					row.hl[j] = HL_COMMENT
+				}
+				break
+			}
+		}
+
+		if mcs_len > 0 && mce_len > 0 && in_string == 0 {
+			if in_comment {
+				row.hl[i] = HL_MLCOMMENT
+				if bytes.HasPrefix(row.render[i:], []byte(mce)) {
+					for j := range mce_len {
+						if i+j < row.rsize {
+							row.hl[i+j] = HL_MLCOMMENT
+						} else {
+							break
+						}
+					}
+					in_comment = false
+					i += mce_len // Skip the end of the multiline comment
+					continue
+				}
+				i++ // Continue in the multiline comment
+				continue
+			} else if bytes.HasPrefix(row.render[i:], []byte(mcs)) {
+				in_comment = true
+				for j := range mcs_len {
+					if i+j < row.rsize {
+						row.hl[i+j] = HL_MLCOMMENT
+					} else {
+						break // Avoid out of bounds
+					}
+				}
+				i += mcs_len // Skip the start of the multiline comment
+				continue
+			}
+		}
+
+		if E.syntax.flags&HL_HIGHLIGHT_STRINGS != 0 {
+			if in_string != 0 {
+				row.hl[i] = HL_STRING
+				if c == '\\' && i+1 < row.rsize {
+					row.hl[i+1] = HL_STRING
+					i += 2
+					continue
+				}
+				if c == in_string {
+					in_string = 0 // End of string
+				}
+				i++
+				prev_sep = true
+				continue
+			} else {
+				if c == '"' || c == '\'' {
+					in_string = c
+					row.hl[i] = HL_STRING
+					i++
+					continue
+				}
+			}
+		}
+
+		if E.syntax.flags&HL_HIGHLIGHT_NUMBERS != 0 {
+			if (isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) || (c == '.' && prev_hl == HL_NUMBER) {
+				row.hl[i] = HL_NUMBER
+				i++
+				prev_sep = false
+				continue
+			}
+		}
+
+		if prev_sep {
+			j := 0
+			for j < len(keywords) {
+				klen := len(keywords[j])
+				is_kw2 := false
+				if klen > 0 && keywords[j][klen-1] == '|' {
+					is_kw2 = true
+					klen-- // Exclude the trailing '|'
+				}
+
+				if klen > 0 && i+klen <= row.rsize &&
+					bytes.Equal(row.render[i:i+klen], []byte(keywords[j][:klen])) &&
+					(i+klen >= row.rsize || isSeparator(int(row.render[i+klen]))) {
+					for k := 0; k < klen; k++ {
+						if is_kw2 {
+							row.hl[i+k] = HL_KEYWORD2
+						} else {
+							row.hl[i+k] = HL_KEYWORD1
+						}
+					}
+					i += klen
+					break
+				}
+				j++
+			}
+			if j < len(keywords) {
+				prev_sep = false
+				continue
+			}
+		}
+
+		prev_sep = isSeparator(int(c))
+		i++
+	}
+
+	changed := row.hl_open_comment != in_comment
+	row.hl_open_comment = in_comment
+	if changed && row.idx+1 < E.numrows {
+		editorUpdateSyntax(&E.row[row.idx+1])
+	}
+}
+
+func editorSyntaxToColor(hl int) int {
+	switch hl {
+	case HL_COMMENT, HL_MLCOMMENT:
+		return 36
+	case HL_KEYWORD1:
+		return 33
+	case HL_KEYWORD2:
+		return 32
+	case HL_STRING:
+		return 35
+	case HL_NUMBER:
+		return 31
+	case HL_MATCH:
+		return 34
+	default:
+		return 37
+	}
+}
+
+func editorSelectSyntaxHighlight() {
+	E.syntax = nil
+	if E.filename == nil {
+		return
+	}
+
+	filename := *E.filename
+	// Find the last dot to get the file extension (equivalent to strrchr)
+	var ext string
+	if lastDot := strings.LastIndex(filename, "."); lastDot != -1 {
+		ext = filename[lastDot:]
+	}
+
+	for j := range HLDB_ENTRIES {
+		s := &HLDB_ENTRIES[j]
+		for i := range s.filematch {
+			pattern := s.filematch[i]
+
+			isExt := pattern[0] == '.'
+			if (isExt && ext != "" && ext == pattern) ||
+				(!isExt && strings.Contains(filename, pattern)) {
+				E.syntax = s
+
+				for filerow := 0; filerow < E.numrows; filerow++ {
+					editorUpdateSyntax(&E.row[filerow])
+				}
+				return
+			}
+		}
+	}
+}
+
 /*** row operations ***/
 
 func editorRowCxToRx(row *row, cx int) int {
@@ -253,6 +540,7 @@ func editorUpdateRow(row *row) {
 	}
 
 	row.rsize = idx
+	editorUpdateSyntax(row)
 }
 
 func editorInsertRow(at int, s []byte, rowlen int) {
@@ -262,6 +550,11 @@ func editorInsertRow(at int, s []byte, rowlen int) {
 
 	E.row = append(E.row, row{})
 	copy(E.row[at+1:], E.row[at:E.numrows])
+	for j := at + 1; j < E.numrows; j++ {
+		E.row[j].idx++
+	}
+
+	E.row[at].idx = at
 
 	E.row[at].size = rowlen
 	E.row[at].chars = make([]byte, rowlen)
@@ -269,6 +562,8 @@ func editorInsertRow(at int, s []byte, rowlen int) {
 
 	E.row[at].rsize = 0
 	E.row[at].render = nil
+	E.row[at].hl = nil
+	E.row[at].hl_open_comment = false
 
 	editorUpdateRow(&E.row[at])
 	E.numrows++
@@ -281,6 +576,7 @@ func editorFreeRow(erow *row) {
 	}
 	erow.chars = nil
 	erow.render = nil
+	erow.hl = nil
 }
 
 func editorDeleteRow(at int) {
@@ -294,6 +590,10 @@ func editorDeleteRow(at int) {
 	// Shift rows down to fill the gap
 	copy(E.row[at:], E.row[at+1:E.numrows])
 	E.row = E.row[:E.numrows-1] // Resize the slice
+
+	for j := at; j < E.numrows-1; j++ {
+		E.row[j].idx--
+	}
 
 	E.numrows--
 	E.dirty++
@@ -428,6 +728,8 @@ func editorOpen(filename *string) {
 	}
 	defer file.Close()
 
+	editorSelectSyntaxHighlight()
+
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -452,6 +754,7 @@ func editorSave() {
 			editorSetStatusMessage("Save aborted")
 			return
 		}
+		editorSelectSyntaxHighlight()
 	}
 
 	var length int
@@ -493,11 +796,20 @@ func editorSave() {
 /*** find ***/
 
 var (
-	last_match = -1
-	direction  = 1
+	last_match    = -1
+	direction     = 1
+	saved_hl_line int
+	saved_hl      []int = nil
 )
 
 func editorFindCallback(query []byte, key int) {
+
+	if saved_hl != nil {
+		// Restore previous highlights
+		copy(E.row[saved_hl_line].hl, saved_hl)
+		saved_hl = nil
+	}
+
 	switch key {
 	case '\r', '\x1b':
 		last_match = -1
@@ -532,6 +844,14 @@ func editorFindCallback(query []byte, key int) {
 			E.cy = current
 			E.cx = editorRowRxToCx(row, match)
 			E.rowOffset = E.numrows
+
+			saved_hl_line = current
+			saved_hl = make([]int, len(row.hl))
+			copy(saved_hl, row.hl)
+			// Highlight the match
+			for k := match; k < match+len(query) && k < len(row.hl); k++ {
+				row.hl[k] = HL_MATCH
+			}
 			break
 		}
 	}
@@ -618,11 +938,42 @@ func editorDrawRows(abuf *appendBuffer) {
 			}
 		} else {
 			lineLen := min(max(E.row[filerow].rsize-E.colOffset, 0), E.screenCols)
-			if lineLen > 0 {
-				start := E.colOffset
-				end := E.colOffset + lineLen
-				abuf.append(E.row[filerow].render[start:end])
+			// Character-by-character rendering with syntax highlighting
+			start := E.colOffset
+			hl := E.row[filerow].hl
+			render := E.row[filerow].render
+			current_color := -1
+			for j := range lineLen {
+				c := render[start+j]
+				h := hl[start+j]
+				if isControl(c) {
+					sym := "?"
+					if c <= 26 {
+						sym = "@" + string(c+'A'-1) // Convert control character to symbol
+					}
+					abuf.append([]byte("\x1b[7m"))
+					abuf.append([]byte(sym))
+					abuf.append([]byte("\x1b[m"))
+					if current_color != -1 {
+						abuf.append(fmt.Appendf(nil, "\x1b[%dm", current_color))
+					}
+				} else if h == HL_NORMAL {
+					if current_color != -1 {
+						abuf.append([]byte("\x1b[39m"))
+						current_color = -1
+					}
+					abuf.append([]byte{c})
+
+				} else {
+					color := editorSyntaxToColor(h)
+					if color != current_color {
+						current_color = color
+						abuf.append(fmt.Appendf(nil, "\x1b[%dm", color))
+					}
+					abuf.append([]byte{c})
+				}
 			}
+			abuf.append([]byte("\x1b[39m"))
 		}
 
 		abuf.append([]byte(CLEAR_LINE)) // Clear line
@@ -648,9 +999,13 @@ func editorDrawStatusBar(abuf *appendBuffer) {
 		dirtyFlag = "(modified)"
 	}
 	status = fmt.Sprintf("%.20s - %d lines %s %d", filename, E.numrows, dirtyFlag, E.dirty)
-
 	statusLen := min(len(status), E.screenCols)
-	rstatus = fmt.Sprintf("%d/%d", E.cy+1, E.numrows)
+
+	filetype := "no ft"
+	if E.syntax != nil {
+		filetype = E.syntax.filetype
+	}
+	rstatus = fmt.Sprintf("%s | %d/%d", filetype, E.cy+1, E.numrows)
 	rstatusLen := len(rstatus)
 	abuf.append([]byte(status[:statusLen]))
 
@@ -892,6 +1247,7 @@ func initEditor() {
 	E.filename = nil
 	E.statusMessage = ""
 	E.statusMessageTime = time.Time{}
+	E.syntax = nil
 
 	if getWindowsSize(&E.screenRows, &E.screenCols) != nil {
 		die("getting window size")
