@@ -14,9 +14,11 @@ import (
 const (
 	GO_DITOR_VERSION = "0.0.1"
 	TAB_STOP         = 4
+	QUIT_TIMES       = 3
 )
 
 const (
+	BACKSPACE   = 127 // ASCII backspace
 	ARROW_LEFT  = iota + 1000
 	ARROW_RIGHT = iota + 1000
 	ARROW_UP    = iota + 1000
@@ -39,7 +41,7 @@ func ctrlKey(c int) int {
 }
 
 /*** data ***/
-type erow struct {
+type row struct {
 	size   int
 	chars  []byte
 	rsize  int
@@ -54,7 +56,8 @@ type editorConfig struct {
 	screenRows        int
 	screenCols        int
 	numrows           int
-	row               []erow // Changed from *erow to []erow (slice)
+	row               []row // Changed from *erow to []erow (slice)
+	dirty             int
 	filename          *string
 	statusMessage     string
 	statusMessageTime time.Time
@@ -67,12 +70,11 @@ var (
 
 /*** terminal ***/
 
-// die prints an error message and exits the program, similar to the C version
+// die prints an error message and exits the program
 func die(s string) {
-	restoreTerminal()                     // Restore terminal before output
-	os.Stdout.Write([]byte(CLEAR_SCREEN)) // Clear the screen
-	os.Stdout.Write([]byte(CURSOR_HOME))  // Move cursor to the top-left corner
-
+	restoreTerminal()
+	os.Stdout.Write([]byte(CLEAR_SCREEN))
+	os.Stdout.Write([]byte(CURSOR_HOME))
 	fmt.Fprintf(os.Stderr, "Error: %s\n", s)
 	os.Exit(1)
 }
@@ -194,7 +196,7 @@ func getCursorPosition(row *int, col *int) error {
 
 /*** row operations ***/
 
-func editorRowCxToRx(row *erow, cx int) int {
+func editorRowCxToRx(row *row, cx int) int {
 	rx := 0
 	for j := 0; j < cx; j++ {
 		if row.chars[j] == '\t' {
@@ -206,7 +208,7 @@ func editorRowCxToRx(row *erow, cx int) int {
 	return rx
 }
 
-func editorUpdateRow(row *erow) {
+func editorUpdateRow(row *row) {
 	tabs := 0
 	for j := 0; j < row.size; j++ {
 		if row.chars[j] == '\t' {
@@ -236,10 +238,14 @@ func editorUpdateRow(row *erow) {
 	row.rsize = idx
 }
 
-func editorAppendRow(s []byte, rowlen int) {
-	// Equivalent to realloc in C - grow the slice
-	E.row = append(E.row, erow{})
-	at := E.numrows
+func editorInsertRow(at int, s []byte, rowlen int) {
+	if at < 0 || at > E.numrows {
+		return
+	}
+
+	E.row = append(E.row, row{})
+	copy(E.row[at+1:], E.row[at:E.numrows])
+
 	E.row[at].size = rowlen
 	E.row[at].chars = make([]byte, rowlen)
 	copy(E.row[at].chars, s)
@@ -249,9 +255,153 @@ func editorAppendRow(s []byte, rowlen int) {
 
 	editorUpdateRow(&E.row[at])
 	E.numrows++
+	E.dirty++
+}
+
+func editorFreeRow(erow *row) {
+	if erow == nil {
+		return
+	}
+	erow.chars = nil
+	erow.render = nil
+}
+
+func editorDeleteRow(at int) {
+	if at < 0 || at >= E.numrows {
+		return
+	}
+
+	// Free the row's resources
+	editorFreeRow(&E.row[at])
+
+	// Shift rows down to fill the gap
+	copy(E.row[at:], E.row[at+1:E.numrows])
+	E.row = E.row[:E.numrows-1] // Resize the slice
+
+	E.numrows--
+	E.dirty++
+}
+
+func editorRowInsertChar(erow *row, at int, c int) {
+	if at < 0 || at > erow.size {
+		at = erow.size
+	}
+
+	// Grow the slice to accommodate the new character
+	erow.chars = append(erow.chars, 0) // Add space for one more character
+
+	// Shift characters to the right to make room for insertion
+	// This is equivalent to memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1)
+	copy(erow.chars[at+1:], erow.chars[at:erow.size])
+
+	// Insert the new character
+	erow.chars[at] = byte(c)
+	erow.size++
+
+	editorUpdateRow(erow)
+	E.dirty++
+}
+
+func editorRowAppendString(erow *row, s []byte, slen int) {
+	newSize := erow.size + slen
+	newChars := make([]byte, newSize)
+
+	copy(newChars[:erow.size], erow.chars[:erow.size])
+	copy(newChars[erow.size:], s[:slen])
+
+	erow.chars = newChars
+	erow.size = newSize
+
+	editorUpdateRow(erow)
+	E.dirty++
+}
+
+func editorRowDeleteChar(erow *row, at int) {
+	if at < 0 || at >= erow.size {
+		return
+	}
+
+	// Shift characters to the left to overwrite the deleted character
+	// This is equivalent to memmove(&row->chars[at], &row->chars[at + 1], row->size - at - 1)
+	copy(erow.chars[at:], erow.chars[at+1:erow.size])
+	erow.size--
+
+	editorUpdateRow(erow)
+	E.dirty++
+}
+
+/*** editor operations ***/
+
+func editorInsertChar(c int) {
+	if E.cy == E.numrows {
+		editorInsertRow(E.numrows, []byte(""), 0)
+	}
+	editorRowInsertChar(&E.row[E.cy], E.cx, c)
+	E.cx++
+}
+
+func editorInsertNewline() {
+	if E.cx == 0 {
+		editorInsertRow(E.cy, []byte(""), 0)
+	} else {
+		row := &E.row[E.cy]
+
+		// Insert new row with text from cursor to end of line
+		remainingText := make([]byte, row.size-E.cx)
+		copy(remainingText, row.chars[E.cx:row.size])
+		editorInsertRow(E.cy+1, remainingText, row.size-E.cx)
+
+		// Truncate current row to text before cursor
+		row = &E.row[E.cy] // Re-get pointer after slice may have been reallocated
+		row.size = E.cx
+		row.chars = row.chars[:E.cx]
+		editorUpdateRow(row)
+	}
+	E.cy++
+	E.cx = 0
+}
+
+func editorDeleteChar() {
+	if E.cy == E.numrows {
+		return
+	}
+	if E.cx == 0 && E.cy == 0 {
+		return
+	}
+
+	row := &E.row[E.cy]
+	if E.cx > 0 {
+		editorRowDeleteChar(row, E.cx-1)
+		E.cx--
+	} else {
+		E.cx = E.row[E.cy-1].size
+		editorRowAppendString(&E.row[E.cy-1], row.chars, row.size)
+		editorDeleteRow(E.cy) // Delete the current row after appending its content to the previous row
+		E.cy--                // Move cursor up to the previous row
+	}
 }
 
 /*** file i/o ***/
+
+func editorRowsToString(bufLen *int) []byte {
+	totalLength := 0
+	for j := 0; j < E.numrows; j++ {
+		totalLength += E.row[j].size + 1 // +1 for newline character
+	}
+	*bufLen = totalLength
+
+	buf := make([]byte, totalLength)
+	p := 0
+
+	for j := 0; j < E.numrows; j++ {
+		copy(buf[p:p+E.row[j].size], E.row[j].chars[:E.row[j].size])
+		p += E.row[j].size
+		buf[p] = '\n'
+		p++
+	}
+
+	return buf
+}
 
 func editorOpen(filename *string) {
 	E.filename = filename
@@ -269,12 +419,58 @@ func editorOpen(filename *string) {
 			line = line[:len(line)-1]
 		}
 
-		editorAppendRow([]byte(line), len(line))
+		editorInsertRow(E.numrows, []byte(line), len(line))
 	}
 
 	if err := scanner.Err(); err != nil {
 		die("reading file")
 	}
+	E.dirty = 0
+}
+
+func editorSave() {
+	if E.filename == nil {
+		E.filename = editorPrompt("Save as: %s (ESC to cancel)")
+		if E.filename == nil {
+			editorSetStatusMessage("Save aborted")
+			return
+		}
+	}
+
+	var length int
+	buf := editorRowsToString(&length)
+
+	// Open file for read/write, create if not exists (equivalent to O_RDWR | O_CREAT, 0644)
+	file, err := os.OpenFile(*E.filename, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		editorSetStatusMessage("Can't save! I/O error: %v", err)
+		return
+	}
+	defer file.Close()
+
+	// Truncate file to exact length (equivalent to ftruncate(fd, len))
+	err = file.Truncate(int64(length))
+	if err != nil {
+		editorSetStatusMessage("Can't save! I/O error: %v", err)
+		return
+	}
+
+	// Write buffer to file (equivalent to write(fd, buf, len))
+	bytesWritten, err := file.Write(buf)
+	if err != nil {
+		editorSetStatusMessage("Can't save! I/O error: %v", err)
+		return
+	}
+
+	// Check if all bytes were written
+	if bytesWritten != length {
+		editorSetStatusMessage("Can't save! Partial write: %d/%d bytes", bytesWritten, length)
+		return
+	}
+
+	// Success message with byte count (equivalent to C version's success case)
+	editorSetStatusMessage("%d bytes written to disk", length)
+	E.dirty = 0 // Reset dirty flag after successful save
 }
 
 /*** append buffer ***/
@@ -367,7 +563,11 @@ func editorDrawStatusBar(abuf *appendBuffer) {
 			filename = filename[:20]
 		}
 	}
-	status = fmt.Sprintf("%.20s - %d lines", filename, E.numrows)
+	dirtyFlag := ""
+	if E.dirty > 0 {
+		dirtyFlag = "(modified)"
+	}
+	status = fmt.Sprintf("%.20s - %d lines %s %d", filename, E.numrows, dirtyFlag, E.dirty)
 
 	statusLen := min(len(status), E.screenCols)
 	rstatus = fmt.Sprintf("%d/%d", E.cy+1, E.numrows)
@@ -423,8 +623,52 @@ func editorSetStatusMessage(format string, args ...interface{}) {
 
 /*** input ***/
 
+func editorPrompt(prompt string) *string {
+	bufSize := 128
+	buf := make([]byte, 0, bufSize)
+
+	for {
+		editorSetStatusMessage(prompt, string(buf))
+		editorRefreshScreen()
+
+		key, err := editorReadKey()
+		if err != nil {
+			die("reading key")
+		}
+
+		switch key {
+		case DELETE_KEY, BACKSPACE, ctrlKey('h'):
+			if len(buf) != 0 {
+				buf = buf[:len(buf)-1]
+			}
+
+		case '\x1b':
+			editorSetStatusMessage("")
+			return nil
+
+		case '\r':
+			if len(buf) != 0 {
+				editorSetStatusMessage("")
+				result := string(buf)
+				return &result
+			}
+
+		default:
+			if !isControl(byte(key)) && key < 128 {
+				if len(buf) == bufSize-1 {
+					bufSize *= 2
+					newBuf := make([]byte, len(buf), bufSize)
+					copy(newBuf, buf)
+					buf = newBuf
+				}
+				buf = append(buf, byte(key))
+			}
+		}
+	}
+}
+
 func editorMoveCursor(key int) {
-	var row *erow
+	var row *row
 	if E.cy >= E.numrows {
 		row = nil
 	} else {
@@ -470,19 +714,34 @@ func editorMoveCursor(key int) {
 	}
 }
 
+var quit_times = QUIT_TIMES
+
 func editorProcessKeypress() {
+
 	key, err := editorReadKey()
 	if err != nil {
 		die("reading key")
 	}
 
 	switch key {
+	case '\r':
+		editorInsertNewline()
+
 	case ctrlKey('q'):
+		if E.dirty > 0 && quit_times > 0 {
+			editorSetStatusMessage("WARNING: File has unsaved changes. Press Ctrl-Q %d more times to quit.", quit_times)
+			quit_times--
+			return
+		}
+
 		restoreTerminal()                     // Restore terminal before clearing screen
 		os.Stdout.Write([]byte(CLEAR_SCREEN)) // Clear the screen
 		os.Stdout.Write([]byte(CURSOR_HOME))  // Move cursor to the top-left corner
 		fmt.Println("Exiting GO-DITOR editor")
 		os.Exit(0)
+
+	case ctrlKey('s'):
+		editorSave()
 
 	case HOME_KEY:
 		E.cx = 0
@@ -491,6 +750,12 @@ func editorProcessKeypress() {
 		if E.cy < E.numrows {
 			E.cx = E.row[E.cy].size
 		}
+
+	case BACKSPACE, ctrlKey('h'), DELETE_KEY:
+		if key == DELETE_KEY {
+			editorMoveCursor(ARROW_RIGHT)
+		}
+		editorDeleteChar()
 
 	case PAGE_UP:
 		E.cy = E.rowOffset
@@ -510,7 +775,16 @@ func editorProcessKeypress() {
 
 	case ARROW_LEFT, ARROW_RIGHT, ARROW_UP, ARROW_DOWN:
 		editorMoveCursor(key)
+
+	case ctrlKey('l'):
+	case '\x1b':
+		break
+
+	default:
+		editorInsertChar(key)
 	}
+
+	quit_times = QUIT_TIMES // Reset quit times after processing a key
 }
 
 /*** init ***/
@@ -521,7 +795,8 @@ func initEditor() {
 	E.rowOffset = 0
 	E.colOffset = 0
 	E.numrows = 0
-	E.row = make([]erow, 0)
+	E.row = make([]row, 0)
+	E.dirty = 0
 	E.filename = nil
 	E.statusMessage = ""
 	E.statusMessageTime = time.Time{}
@@ -547,7 +822,7 @@ func main() {
 		editorOpen(&args[0])
 	}
 
-	editorSetStatusMessage("HELP: Ctrl-Q = quit")
+	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit")
 
 	for {
 		editorRefreshScreen()
