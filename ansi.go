@@ -21,6 +21,6 @@ const (
 	CURSOR_RESPONSE_FORMAT = "\x1b[%d;%dR" // Format for parsing cursor position response
 
 	// Text formatting
-	COLORS_RESET  = "\x1b[m" // Reset all text formatting
+	COLORS_RESET  = "\x1b[m"
 	COLORS_INVERT = "\x1b[7m"
 )

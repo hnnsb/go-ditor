@@ -69,6 +69,7 @@ var (
 
 // die prints an error message and exits the program, similar to the C version
 func die(s string) {
+	restoreTerminal()                     // Restore terminal before output
 	os.Stdout.Write([]byte(CLEAR_SCREEN)) // Clear the screen
 	os.Stdout.Write([]byte(CURSOR_HOME))  // Move cursor to the top-left corner
 
@@ -85,6 +86,7 @@ func enableRawMode() error {
 func restoreTerminal() {
 	if E.originalState != nil {
 		term.Restore(int(os.Stdin.Fd()), E.originalState)
+		E.originalState = nil // Prevent multiple restoration attempts
 	}
 }
 
@@ -476,6 +478,7 @@ func editorProcessKeypress() {
 
 	switch key {
 	case ctrlKey('q'):
+		restoreTerminal()                     // Restore terminal before clearing screen
 		os.Stdout.Write([]byte(CLEAR_SCREEN)) // Clear the screen
 		os.Stdout.Write([]byte(CURSOR_HOME))  // Move cursor to the top-left corner
 		fmt.Println("Exiting GO-DITOR editor")
