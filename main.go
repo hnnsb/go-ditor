@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"time"
@@ -206,6 +207,22 @@ func editorRowCxToRx(row *row, cx int) int {
 		}
 	}
 	return rx
+}
+
+func editorRowRxToCx(row *row, rx int) int {
+	cur_rx := 0
+	var cx int
+	for cx = 0; cx < row.size; cx++ {
+		if row.chars[cx] == '\t' {
+			cur_rx += (TAB_STOP - 1) - (cur_rx % TAB_STOP) // Expand tab to next TAB_STOP boundary
+		}
+		cur_rx++
+
+		if cur_rx > rx {
+			return cx
+		}
+	}
+	return cx
 }
 
 func editorUpdateRow(row *row) {
@@ -430,7 +447,7 @@ func editorOpen(filename *string) {
 
 func editorSave() {
 	if E.filename == nil {
-		E.filename = editorPrompt("Save as: %s (ESC to cancel)")
+		E.filename = editorPrompt("Save as: %s (ESC to cancel)", nil)
 		if E.filename == nil {
 			editorSetStatusMessage("Save aborted")
 			return
@@ -471,6 +488,69 @@ func editorSave() {
 	// Success message with byte count (equivalent to C version's success case)
 	editorSetStatusMessage("%d bytes written to disk", length)
 	E.dirty = 0 // Reset dirty flag after successful save
+}
+
+/*** find ***/
+
+var (
+	last_match = -1
+	direction  = 1
+)
+
+func editorFindCallback(query []byte, key int) {
+	switch key {
+	case '\r', '\x1b':
+		last_match = -1
+		direction = 1
+		return
+	case ARROW_RIGHT, ARROW_DOWN:
+		direction = 1
+	case ARROW_LEFT, ARROW_UP:
+		direction = -1
+	default:
+		last_match = -1
+		direction = 1
+	}
+
+	if last_match == -1 {
+		direction = 1
+	}
+	current := last_match
+
+	for i := 0; i < E.numrows; i++ {
+		current += direction
+		if current == -1 {
+			current = E.numrows - 1
+		} else if current == E.numrows {
+			current = 0
+		}
+
+		row := &E.row[current]
+		match := bytes.Index(row.render, query)
+		if match != -1 {
+			last_match = current
+			E.cy = current
+			E.cx = editorRowRxToCx(row, match)
+			E.rowOffset = E.numrows
+			break
+		}
+	}
+}
+
+func editorFind() {
+	saved_cx := E.cx
+	saved_cy := E.cy
+	saved_colOffset := E.colOffset
+	saved_rowOffset := E.rowOffset
+
+	query := editorPrompt("Search: %s (Use ESC/Arrows/Enter)", editorFindCallback)
+
+	if query == nil {
+		E.cx = saved_cx
+		E.cy = saved_cy
+		E.colOffset = saved_colOffset
+		E.rowOffset = saved_rowOffset
+	}
 }
 
 /*** append buffer ***/
@@ -623,7 +703,7 @@ func editorSetStatusMessage(format string, args ...interface{}) {
 
 /*** input ***/
 
-func editorPrompt(prompt string) *string {
+func editorPrompt(prompt string, callback func([]byte, int)) *string {
 	bufSize := 128
 	buf := make([]byte, 0, bufSize)
 
@@ -644,11 +724,17 @@ func editorPrompt(prompt string) *string {
 
 		case '\x1b':
 			editorSetStatusMessage("")
+			if callback != nil {
+				callback(buf, key)
+			}
 			return nil
 
 		case '\r':
 			if len(buf) != 0 {
 				editorSetStatusMessage("")
+				if callback != nil {
+					callback(buf, key)
+				}
 				result := string(buf)
 				return &result
 			}
@@ -663,6 +749,9 @@ func editorPrompt(prompt string) *string {
 				}
 				buf = append(buf, byte(key))
 			}
+		}
+		if callback != nil {
+			callback(buf, key)
 		}
 	}
 }
@@ -751,6 +840,9 @@ func editorProcessKeypress() {
 			E.cx = E.row[E.cy].size
 		}
 
+	case ctrlKey('f'):
+		editorFind()
+
 	case BACKSPACE, ctrlKey('h'), DELETE_KEY:
 		if key == DELETE_KEY {
 			editorMoveCursor(ARROW_RIGHT)
@@ -822,7 +914,7 @@ func main() {
 		editorOpen(&args[0])
 	}
 
-	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit")
+	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find")
 
 	for {
 		editorRefreshScreen()
