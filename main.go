@@ -15,9 +15,10 @@ import (
 
 // Config Constants
 const (
-	GO_DITOR_VERSION = "0.0.1"
-	TAB_STOP         = 4
-	QUIT_TIMES       = 3
+	GO_DITOR_VERSION       = "0.0.1"
+	TAB_STOP               = 4
+	CONTROL_SEQUENCE_WIDTH = 2
+	QUIT_TIMES             = 3
 )
 
 // Key aliase
@@ -44,6 +45,7 @@ const (
 	HL_STRING
 	HL_NUMBER
 	HL_MATCH
+	HL_CONTROL
 )
 
 // Syntax highlighting flags
@@ -155,6 +157,11 @@ func die(s string) {
 // Enable raw mode for terminal input.
 // This allows us to read every input key and positions the cursor freely
 func enableRawMode() error {
+	// Check if stdin is a terminal
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("stdin is not a terminal")
+	}
+
 	var err error
 	E.originalState, err = term.MakeRaw(int(os.Stdin.Fd()))
 	return err
@@ -272,7 +279,7 @@ func isSeparator(c int) bool {
 
 func editorUpdateSyntax(row *erow) {
 	row.hl = make([]int, row.rsize)
-	for i := range row.hl {
+	for i := range row.hl { // uncessary but ensures hl is initialized
 		row.hl[i] = HL_NORMAL // Default to normal highlighting
 	}
 
@@ -299,6 +306,33 @@ func editorUpdateSyntax(row *erow) {
 		prevHl := HL_NORMAL
 		if i > 0 {
 			prevHl = row.hl[i-1]
+		}
+
+		// Highlight control sequences like ^[ ^A ^B etc.
+		if inString == 0 && !inComment && c == '^' && i+1 < row.rsize {
+			row.hl[i] = HL_CONTROL
+			row.hl[i+1] = HL_CONTROL
+
+			if i+1 < row.rsize && row.render[i+1] == '[' {
+				j := i + 2
+				for j < row.rsize {
+					ch := row.render[j]
+					row.hl[j] = HL_CONTROL
+					j++
+					// Final character (letter) ends the sequence
+					if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+						break
+					}
+					if ch == '~' || ch == 'm' || ch == 'H' || ch == 'J' || ch == 'K' {
+						break
+					}
+				}
+				i = j
+			} else {
+				i += 2 // Skip both characters for simple control sequences
+			}
+			prevSep = true
+			continue
 		}
 
 		if scsLen > 0 && inString == 0 && !inComment {
@@ -431,6 +465,8 @@ func editorSyntaxToGraphics(hl int) (int, int) {
 		return ANSI_COLOR_RED, 0
 	case HL_MATCH:
 		return ANSI_COLOR_BLUE, ANSI_REVERSE
+	case HL_CONTROL:
+		return ANSI_COLOR_RED, ANSI_REVERSE
 	default:
 		return ANSI_COLOR_DEFAULT, 0
 	}
@@ -483,6 +519,8 @@ func editorRowCxToRx(row *erow, cx int) int {
 	for j := range cx {
 		if row.chars[j] == '\t' {
 			rx += TAB_STOP - (rx % TAB_STOP) // Expand tab to next TAB_STOP boundary
+		} else if isControl(row.chars[j]) {
+			rx += CONTROL_SEQUENCE_WIDTH
 		} else {
 			rx++
 		}
@@ -496,6 +534,8 @@ func editorRowRxToCx(row *erow, rx int) int {
 	for cx = 0; cx < row.size; cx++ {
 		if row.chars[cx] == '\t' {
 			curRx += (TAB_STOP - 1) - (curRx % TAB_STOP) // Expand tab to next TAB_STOP boundary
+		} else if isControl(row.chars[cx]) {
+			curRx += CONTROL_SEQUENCE_WIDTH
 		}
 		curRx++
 
@@ -508,18 +548,21 @@ func editorRowRxToCx(row *erow, rx int) int {
 
 func editorUpdateRow(row *erow) {
 	tabs := 0
-	for j := 0; j < row.size; j++ {
-		if row.chars[j] == '\t' {
+	controlSequences := 0
+	for _, char := range row.chars {
+		if char == '\t' {
 			tabs++
+		} else if isControl(char) {
+			controlSequences++
 		}
 	}
 
 	// Size: for worst case tab expansion
-	row.render = make([]byte, row.size+tabs*(TAB_STOP-1))
+	row.render = make([]byte, row.size+tabs*(TAB_STOP-1)+controlSequences*(CONTROL_SEQUENCE_WIDTH-1))
 
 	idx := 0
-	for j := 0; j < row.size; j++ {
-		if row.chars[j] == '\t' {
+	for _, char := range row.chars {
+		if char == '\t' {
 			row.render[idx] = ' '
 			idx++
 			// Add spaces until we reach the next TAB_STOP boundary
@@ -527,8 +570,20 @@ func editorUpdateRow(row *erow) {
 				row.render[idx] = ' '
 				idx++
 			}
+		} else if isControl(char) {
+			row.render[idx] = '^'
+			idx++
+			switch char {
+			case 127: // DEL character
+				row.render[idx] = '?'
+			case '\x1b': // ESC character
+				row.render[idx] = '['
+			default:
+				row.render[idx] = char + '@' // Convert control character to printable
+			}
+			idx++
 		} else {
-			row.render[idx] = row.chars[j]
+			row.render[idx] = char
 			idx++
 		}
 	}
@@ -935,18 +990,7 @@ func editorDrawRows(abuf *appendBuffer) {
 			for j := range lineLen {
 				c := render[start+j]
 				h := hl[start+j]
-				if isControl(c) {
-					sym := "?"
-					if c <= 26 {
-						sym = "@" + string(c+'A'-1) // Convert control character to symbol
-					}
-					abuf.append([]byte("\x1b[7m"))
-					abuf.append([]byte(sym))
-					abuf.append([]byte("\x1b[m"))
-					if currentColor != -1 {
-						abuf.append(fmt.Appendf(nil, "\x1b[%dm", currentColor))
-					}
-				} else if h == HL_NORMAL {
+				if h == HL_NORMAL {
 					// Reset both color and style for normal text
 					if currentColor != -1 {
 						abuf.append(fmt.Appendf(nil, "\x1b[%dm", ANSI_COLOR_DEFAULT))
@@ -1277,7 +1321,7 @@ func main() {
 	args := os.Args[1:]
 	err := enableRawMode()
 	if err != nil {
-		die("enabling raw mode")
+		die("enabling raw mode: " + err.Error())
 	}
 	defer restoreTerminal()
 
