@@ -375,6 +375,7 @@ func editorUpdateSyntax(row *erow) {
 		}
 
 		if prevSep {
+			// we entered a new word
 			j := 0
 			for j < len(keywords) {
 				klen := len(keywords[j])
@@ -416,23 +417,31 @@ func editorUpdateSyntax(row *erow) {
 	}
 }
 
-func editorSyntaxToColor(hl int) int {
+func editorSyntaxToGraphics(hl int) (int, int) {
 	switch hl {
 	case HL_COMMENT, HL_MLCOMMENT:
-		return 36
+		return ANSI_COLOR_CYAN, 0
 	case HL_KEYWORD1:
-		return 33
+		return ANSI_COLOR_YELLOW, 0
 	case HL_KEYWORD2:
-		return 32
+		return ANSI_COLOR_GREEN, 0
 	case HL_STRING:
-		return 35
+		return ANSI_COLOR_MAGENTA, 0
 	case HL_NUMBER:
-		return 31
+		return ANSI_COLOR_RED, 0
 	case HL_MATCH:
-		return 34
+		return ANSI_COLOR_BLUE, ANSI_REVERSE
 	default:
-		return 37
+		return ANSI_COLOR_DEFAULT, 0
 	}
+}
+
+// Get the appropriate reset code for a given style
+func getStyleResetCode(style int) int {
+	if resetCode, exists := styleResetCodes[style]; exists {
+		return resetCode
+	}
+	return 0
 }
 
 func editorSelectSyntaxHighlight() {
@@ -901,10 +910,7 @@ func editorDrawRows(abuf *appendBuffer) {
 		if filerow >= E.totalRows {
 			if E.totalRows == 0 && y == E.screenRows/3 {
 				welcome := "GO-DITOR editor -- version " + GO_DITOR_VERSION
-				welcomelen := len(welcome)
-				if welcomelen > E.screenCols {
-					welcomelen = E.screenCols
-				}
+				welcomelen := min(len(welcome), E.screenCols)
 				padding := (E.screenCols - welcomelen) / 2
 				if padding > 0 {
 					abuf.append([]byte("~"))
@@ -924,6 +930,7 @@ func editorDrawRows(abuf *appendBuffer) {
 			hl := E.row[filerow].hl
 			render := E.row[filerow].render
 			currentColor := -1
+			currentStyle := 0
 			for j := range lineLen {
 				c := render[start+j]
 				h := hl[start+j]
@@ -939,23 +946,55 @@ func editorDrawRows(abuf *appendBuffer) {
 						abuf.append(fmt.Appendf(nil, "\x1b[%dm", currentColor))
 					}
 				} else if h == HL_NORMAL {
+					// Reset both color and style for normal text
 					if currentColor != -1 {
-						abuf.append([]byte("\x1b[39m"))
+						abuf.append(fmt.Appendf(nil, "\x1b[%dm", ANSI_COLOR_DEFAULT))
 						currentColor = -1
 					}
+					if currentStyle != 0 {
+						resetCode := getStyleResetCode(currentStyle)
+						if resetCode != 0 {
+							abuf.append(fmt.Appendf(nil, "\x1b[%dm", resetCode))
+						}
+						currentStyle = 0
+					}
 					abuf.append([]byte{c})
-
 				} else {
-					color := editorSyntaxToColor(h)
+					// Get both color and style from the combined function
+					color, style := editorSyntaxToGraphics(h)
+
+					// Apply style if different from current
+					if currentStyle != style {
+						// Reset previous style if it was set and not normal
+						if currentStyle != 0 {
+							resetCode := getStyleResetCode(currentStyle)
+							if resetCode != 0 {
+								abuf.append(fmt.Appendf(nil, "\x1b[%dm", resetCode))
+							}
+						}
+						// Apply new style if not normal
+						if style != 0 {
+							abuf.append(fmt.Appendf(nil, "\x1b[%dm", style))
+						}
+						currentStyle = style
+					}
+
+					// Apply color if different from current
 					if color != currentColor {
 						currentColor = color
-						// TODO Other text styling
 						abuf.append(fmt.Appendf(nil, "\x1b[%dm", color))
 					}
 					abuf.append([]byte{c})
 				}
 			}
-			abuf.append([]byte("\x1b[39m"))
+			// Reset all formatting at end of line
+			abuf.append(fmt.Appendf(nil, "\x1b[%dm", ANSI_COLOR_DEFAULT))
+			if currentStyle != 0 {
+				resetCode := getStyleResetCode(currentStyle)
+				if resetCode != 0 {
+					abuf.append(fmt.Appendf(nil, "\x1b[%dm", resetCode))
+				}
+			}
 		}
 
 		abuf.append([]byte(CLEAR_LINE)) // Clear line
