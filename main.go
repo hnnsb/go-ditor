@@ -292,6 +292,10 @@ func editorUpdateSyntax(row *editorRow) {
 	mcs := E.syntax.multilineCommentStart
 	mce := E.syntax.multilineCommentEnd
 
+	scsBytes := []byte(scs)
+	mcsBytes := []byte(mcs)
+	mceBytes := []byte(mce)
+
 	scsLen := len(scs)
 	mcsLen := len(mcs)
 	mceLen := len(mce)
@@ -335,7 +339,7 @@ func editorUpdateSyntax(row *editorRow) {
 		}
 
 		if scsLen > 0 && inString == 0 && !inComment {
-			if bytes.HasPrefix(row.render[i:], []byte(scs)) {
+			if bytes.HasPrefix(row.render[i:], scsBytes) {
 				for j := i; j < row.rsize; j++ {
 					row.hl[j] = HL_COMMENT
 				}
@@ -346,7 +350,7 @@ func editorUpdateSyntax(row *editorRow) {
 		if mcsLen > 0 && mceLen > 0 && inString == 0 {
 			if inComment {
 				row.hl[i] = HL_MLCOMMENT
-				if bytes.HasPrefix(row.render[i:], []byte(mce)) {
+				if bytes.HasPrefix(row.render[i:], mceBytes) {
 					for j := range mceLen {
 						if i+j < row.rsize {
 							row.hl[i+j] = HL_MLCOMMENT
@@ -360,7 +364,7 @@ func editorUpdateSyntax(row *editorRow) {
 				}
 				i++ // Continue in the multiline comment
 				continue
-			} else if bytes.HasPrefix(row.render[i:], []byte(mcs)) {
+			} else if bytes.HasPrefix(row.render[i:], mcsBytes) {
 				inComment = true
 				for j := range mcsLen {
 					if i+j < row.rsize {
@@ -409,38 +413,44 @@ func editorUpdateSyntax(row *editorRow) {
 
 		if prevSep {
 			// we entered a new word
-			j := 0
-			for j < len(keywords) {
-				klen := len(keywords[j])
+			for _, keyword := range keywords {
+				klen := len(keyword)
 				isKw2 := false
-				if klen > 0 && keywords[j][klen-1] == '|' {
+				if klen > 0 && keyword[klen-1] == '|' {
 					isKw2 = true
 					klen-- // Exclude the trailing '|'
 				}
 
-				if klen > 0 && i+klen <= row.rsize &&
-					bytes.Equal(row.render[i:i+klen], []byte(keywords[j][:klen])) &&
-					(i+klen >= row.rsize || isSeparator(int(row.render[i+klen]))) {
-					for k := range klen {
-						if isKw2 {
-							row.hl[i+k] = HL_KEYWORD2
-						} else {
-							row.hl[i+k] = HL_KEYWORD1
+				if klen > 0 && i+klen <= row.rsize {
+					// Compare bytes directly without creating new slice
+					match := true
+					for k := 0; k < klen; k++ {
+						if row.render[i+k] != keyword[k] {
+							match = false
+							break
 						}
 					}
-					i += klen
-					break
-				}
-				j++
-			}
-			if j < len(keywords) {
-				prevSep = false
-				continue
-			}
-		}
 
-		prevSep = isSeparator(int(c))
+					if match && (i+klen >= row.rsize || isSeparator(int(row.render[i+klen]))) {
+						for k := range klen {
+							if isKw2 {
+								row.hl[i+k] = HL_KEYWORD2
+							} else {
+								row.hl[i+k] = HL_KEYWORD1
+							}
+						}
+						i += klen
+						goto nextChar // Found keyword, continue with next character
+					}
+				}
+			}
+			// No keyword found
+			prevSep = false
+		} else {
+			prevSep = isSeparator(int(c))
+		}
 		i++
+	nextChar:
 	}
 
 	changed := row.hlOpenComment != inComment
@@ -596,22 +606,24 @@ func editorInsertRow(at int, s []byte, rowlen int) {
 		return
 	}
 
-	E.row = append(E.row, editorRow{})
-	copy(E.row[at+1:], E.row[at:E.totalRows])
-	for j := at + 1; j < E.totalRows; j++ {
-		E.row[j].idx++
+	// Create new row
+	newRow := editorRow{
+		idx:           at,
+		size:          rowlen,
+		chars:         append([]byte(nil), s...), // Create copy of s
+		rsize:         0,
+		render:        nil,
+		hl:            nil,
+		hlOpenComment: false,
 	}
 
-	E.row[at].idx = at
+	// Insert row using slice operations
+	E.row = append(E.row[:at], append([]editorRow{newRow}, E.row[at:]...)...)
 
-	E.row[at].size = rowlen
-	E.row[at].chars = make([]byte, rowlen)
-	copy(E.row[at].chars, s)
-
-	E.row[at].rsize = 0
-	E.row[at].render = nil
-	E.row[at].hl = nil
-	E.row[at].hlOpenComment = false
+	// Update indices for rows that were shifted
+	for j := at + 1; j < E.totalRows+1; j++ {
+		E.row[j].idx = j
+	}
 
 	E.row[at].update()
 	E.totalRows++
@@ -623,12 +635,12 @@ func editorDeleteRow(at int) {
 		return
 	}
 
-	// Shift rows down to fill the gap
-	copy(E.row[at:], E.row[at+1:E.totalRows])
-	E.row = E.row[:E.totalRows-1] // Resize the slice
+	// Delete row using slice operations
+	E.row = append(E.row[:at], E.row[at+1:]...)
 
-	for j := at; j < E.totalRows-1; j++ {
-		E.row[j].idx--
+	// Update indices for remaining rows
+	for j := at; j < len(E.row); j++ {
+		E.row[j].idx = j
 	}
 
 	E.totalRows--
@@ -640,28 +652,17 @@ func (row *editorRow) insertChar(at int, c int) {
 		at = row.size
 	}
 
-	// Grow the slice to accommodate the new character
-	row.chars = append(row.chars, 0) // Add space for one more character
-
-	// Shift characters to the right to make room for insertion
-	copy(row.chars[at+1:], row.chars[at:row.size])
-
-	row.chars[at] = byte(c)
+	// Insert character at position using slices
+	row.chars = append(row.chars[:at], append([]byte{byte(c)}, row.chars[at:]...)...)
 	row.size++
 
 	row.update()
 	E.dirty++
 }
 
-func (row *editorRow) appendBytes(s []byte, slen int) {
-	newSize := row.size + slen
-	newChars := make([]byte, newSize)
-
-	copy(newChars[:row.size], row.chars[:row.size])
-	copy(newChars[row.size:], s[:slen])
-
-	row.chars = newChars
-	row.size = newSize
+func (row *editorRow) appendBytes(s []byte) {
+	row.chars = append(row.chars, s...)
+	row.size = len(row.chars)
 
 	row.update()
 	E.dirty++
@@ -672,10 +673,9 @@ func (row *editorRow) deleteChar(at int) {
 		return
 	}
 
-	// Shift characters to the left to overwrite the deleted character
-	copy(row.chars[at:], row.chars[at+1:row.size])
-	row.size--
-	row.chars = row.chars[:row.size] // Resize the slice to match the new size
+	// Delete character using slice operations
+	row.chars = append(row.chars[:at], row.chars[at+1:]...)
+	row.size = len(row.chars)
 
 	row.update()
 	E.dirty++
@@ -726,7 +726,7 @@ func editorDeleteChar() {
 		E.cx--
 	} else {
 		E.cx = E.row[E.cy-1].size
-		E.row[E.cy-1].appendBytes(row.chars, row.size)
+		E.row[E.cy-1].appendBytes(row.chars)
 		editorDeleteRow(E.cy) // Delete the current row after appending its content to the previous row
 		E.cy--                // Move cursor up to the previous row
 	}
@@ -735,22 +735,22 @@ func editorDeleteChar() {
 /*** file i/o ***/
 
 func editorRowsToString() ([]byte, int) {
-	totalLength := 0
+	var buf strings.Builder
+
+	// Pre-calculate total size for efficiency
+	totalSize := 0
 	for _, row := range E.row {
-		totalLength += row.size + 1 // +1 for newline character
+		totalSize += row.size + 1 // +1 for newline
+	}
+	buf.Grow(totalSize)
+
+	for _, row := range E.row {
+		buf.Write(row.chars[:row.size])
+		buf.WriteByte('\n')
 	}
 
-	buf := make([]byte, totalLength)
-	p := 0
-
-	for _, row := range E.row {
-		copy(buf[p:p+row.size], row.chars[:row.size])
-		p += row.size
-		buf[p] = '\n'
-		p++
-	}
-
-	return buf, totalLength
+	result := buf.String()
+	return []byte(result), len(result)
 }
 
 func editorOpen(filename string) {
@@ -915,11 +915,6 @@ type appendBuffer struct {
 func (ab *appendBuffer) append(s []byte) {
 	ab.b = append(ab.b, s...)
 	ab.len += len(s)
-}
-
-func (ab *appendBuffer) free() {
-	ab.b = nil
-	ab.len = 0
 }
 
 /*** output ***/
@@ -1099,7 +1094,6 @@ func editorRefreshScreen() {
 	abuf.append([]byte(CURSOR_SHOW))
 
 	os.Stdout.Write(abuf.b)
-	abuf.free()
 }
 
 func editorSetStatusMessage(format string, args ...any) {
