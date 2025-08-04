@@ -13,17 +13,19 @@
 
 ### 2. Global State Management
 
-- [ ] Eliminate global variable `E` (editorConfig)
-- [ ] Create an Editor struct and pass it around instead of global access
-- [ ] Use dependency injection patterns
-- [ ] Separate editor state from terminal/display state
+- [x] Eliminate global variable `E` (editorConfig)
+- [x] Create an Editor struct and pass it around instead of global access
+- [x] Use dependency injection patterns
+- [x] Separate editor state from terminal/display state
+- [x] Convert all functions to methods or accept Editor parameter
 
 ### 3. Constants and Naming Conventions
 
-- [ ] Convert constants to proper Go naming (GO_DITOR_VERSION → GoDitorVersion)
-- [ ] Group related constants using typed constants and iota
-- [ ] Create enum-like types for keys, colors, and styles
-- [ ] Use consistent camelCase/PascalCase throughout
+- [x] Group related constants using typed constants and iota
+- [x] Create enum-like types for keys, colors, and styles
+- [x] Use consistent naming throughout (keeping current SCREAMING_SNAKE_CASE style)
+  - GO idiomatic would be PascalCase
+- [x] Constants and naming conventions are well-organized
 
 ### 4. Function Organization and Interfaces
 

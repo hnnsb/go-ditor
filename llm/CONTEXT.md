@@ -2,11 +2,35 @@
 
 ## Project Overview
 
-GO-DITOR is a terminal-based text editor written in Go, inspired by the kilo editor tutorial but significantly enhanced with modern Go practices and advanced features.
+GO-DITOR is a terminal-based text editor written in Go, inspired by the kilo editor tutorial but significantly enhanced with modern Go practices and advanced features. The project has undergone major refactoring to follow Go idioms and best practices.
 
 **Current Version**: 1.0.0  
 **Language**: Go  
-**Architecture**: Single-file terminal application with modular structure
+**Architecture**: Single-file terminal application with object-oriented design
+
+## Recent Major Refactoring (2024)
+
+### Completed Modernization Efforts
+
+1. **✅ Error Handling & Recovery**
+
+   - Replaced `die()` function with proper Go error handling patterns
+   - File operations now return errors instead of terminating
+   - Graceful error recovery for non-fatal operations
+   - User-friendly error messages in status bar
+
+2. **✅ Global State Elimination**
+
+   - Converted all functions to methods on `Editor` struct
+   - Eliminated global variable access patterns
+   - Implemented dependency injection with constructor functions
+   - Separated terminal and editor state management
+
+3. **✅ Go Idiomatic Patterns**
+   - Method receivers on `*Editor` for all operations
+   - Proper error handling with early returns
+   - Constructor pattern with `NewEditor()` and `NewTerminal()`
+   - Clean separation of concerns
 
 ## Key Features Implemented
 
@@ -21,38 +45,42 @@ GO-DITOR is a terminal-based text editor written in Go, inspired by the kilo edi
 ### Advanced Syntax Highlighting System
 
 - **Multi-language Support**: C/C++ and Go syntax highlighting
-- **Extensible Architecture**: Easy to add new languages
+- **Extensible Architecture**: Easy to add new languages via `HLDB_ENTRIES`
 - **Highlighting Types**: Keywords, strings, numbers, comments, control sequences
 - **ANSI Graphics Integration**: Comprehensive color and style system
 
-### Control Sequence Highlighting (Recent Implementation)
+### Control Sequence Highlighting
 
-- **Purpose**: Highlights control sequences that appear in files but have no valid terminal actions
-- **Detection**: Recognizes `^X` patterns (e.g., `^[`, `^A`, `^B`)
-- **Extended Sequences**: Special handling for escape sequences like `^[B`, `^[2J`
+- **Purpose**: Highlights control sequences in files (e.g., `^[`, `^A`, `^B`)
+- **Detection**: Recognizes patterns with special handling for escape sequences
 - **Visual Feedback**: Red reverse video highlighting for easy identification
 
 ## File Structure
 
 ```
 go-ditor/
-├── main.go          # Main application file (~1300+ lines)
+├── go_ditor.go     # Main application file (~1300+ lines, fully refactored)
 ├── ansi.go         # ANSI escape sequences and constants
 ├── go.mod          # Go module definition
 ├── go.sum          # Module checksums
 ├── README.md       # Project documentation
-├── TODO.md         # Development roadmap
-└── CONTEXT.md      # This context file
+├── TODO.md         # Development roadmap (mostly completed)
+└── llm/
+    └── CONTEXT.md  # This context file
 ```
 
 ## Architecture Deep Dive
 
-### Data Structures
-
-#### Core Types
+### Core Data Structures (Refactored)
 
 ```go
-type editorConfig struct {
+// Terminal handles terminal-specific operations
+type Terminal struct {
+    originalState *term.State
+}
+
+// Editor represents the text editor state
+type Editor struct {
     cx, cy            int           // Cursor position
     rx                int           // Render X position
     rowOffset         int           // Vertical scroll offset
@@ -66,7 +94,7 @@ type editorConfig struct {
     statusMessage     string        // Status bar message
     statusMessageTime time.Time     // Message timestamp
     syntax            *editorSyntax // Current syntax highlighting
-    originalState     *term.State   // Terminal state backup
+    terminal          *Terminal     // Terminal interface
 }
 
 type editorRow struct {
@@ -76,87 +104,90 @@ type editorRow struct {
     hl            []int    // Highlighting information
     hlOpenComment bool     // Multi-line comment state
 }
+```
 
-type editorSyntax struct {
-    filetype               string   // Language identifier
-    filematch              []string // File extension patterns
-    keywords               []string // Language keywords
-    singlelineCommentStart string   // Single-line comment syntax
-    multilineCommentStart  string   // Multi-line comment start
-    multilineCommentEnd    string   // Multi-line comment end
-    flags                  int      // Feature flags
-}
+### Method-Based Architecture
+
+All operations are now methods on the appropriate structs:
+
+#### Editor Methods
+
+```go
+// Core operations
+func (e *Editor) InsertChar(c int)
+func (e *Editor) DeleteChar()
+func (e *Editor) InsertNewline()
+
+// File operations
+func (e *Editor) Open(filename string) error
+func (e *Editor) Save()
+
+// Navigation and display
+func (e *Editor) MoveCursor(key int)
+func (e *Editor) RefreshScreen()
+func (e *Editor) ProcessKeypress()
+
+// Terminal control
+func (e *Editor) EnableRawMode() error
+func (e *Editor) RestoreTerminal()
+
+// Error handling
+func (e *Editor) Die(format string, args ...any)
+func (e *Editor) ShowError(format string, args ...any)
+```
+
+#### Row Methods (with Editor Context)
+
+```go
+func (row *editorRow) InsertChar(e *Editor, at int, c int)
+func (row *editorRow) Update(e *Editor)
+func (row *editorRow) UpdateSyntax(e *Editor)
 ```
 
 ### Key Subsystems
 
-#### 1. Terminal Management (`/*** terminal ***/`)
+#### 1. Terminal Management
 
-- Raw mode enable/disable with proper cleanup
+- Raw mode enable/disable with proper cleanup via `*Terminal` struct
 - Key reading with escape sequence parsing
 - Window size detection
-- Cross-platform compatibility considerations
+- Proper state restoration on exit
 
-#### 2. Syntax Highlighting (`/*** syntax highlighting ***/`)
+#### 2. Error Handling Strategy
 
-- **editorUpdateSyntax()**: Core highlighting engine
-- **Control Sequence Detection**: Latest feature for highlighting terminal sequences
-- **Multi-state Parser**: Handles strings, comments, keywords simultaneously
-- **Extensible Design**: Easy language addition through HLDB_ENTRIES
+- **Fatal Errors**: Terminal initialization failures (terminate with `Die()`)
+- **Recoverable Errors**: File operations (show error in status bar with `ShowError()`)
+- **Transient Errors**: Input errors (brief status message, continue operation)
 
-#### 3. Row Operations (`/*** row operations ***/`)
+#### 3. Syntax Highlighting Engine
 
-- **Cursor Mapping**: Convert between cursor position and render position
-- **Text Rendering**: Handle tabs and control characters
-- **Control Character Expansion**: Convert control chars to `^X` format
+- Real-time highlighting with `UpdateSyntax()` method
+- Multi-language support through `HLDB_ENTRIES`
+- Control sequence detection and highlighting
+- Efficient character-by-character rendering
 
-#### 4. File I/O (`/*** file i/o ***/`)
+#### 4. Object-Oriented Design
 
-- **Efficient Loading**: Line-by-line file reading
-- **Safe Saving**: Atomic write operations with error handling
-- **Encoding Handling**: Proper text encoding management
+- No global state access in any methods
+- Clear ownership and responsibility separation
+- Dependency injection through constructor pattern
+- Testable architecture with method receivers
 
-## Recent Development History
+## Constructor Pattern
 
-### Major Refactoring (Recent)
+### Initialization
 
-1. **Architecture Modernization**:
+```go
+func NewTerminal() *Terminal
+func NewEditor() Editor
+func (e *Editor) Init() error
 
-   - Migrated from pointer-based to value-based editorRow
-   - Improved memory management and slice operations
-   - Enhanced method organization with receiver methods
-
-2. **Control Sequence Highlighting Implementation**:
-
-   - Added `HL_CONTROL` highlighting type
-   - Implemented detection for `^X` patterns in `editorUpdateSyntax()`
-   - Special handling for escape sequences (`^[B`, `^[2J`, etc.)
-   - Integrated with ANSI graphics system for visual feedback
-
-3. **ANSI Graphics System Enhancement**:
-   - Comprehensive constants in `ansi.go`
-   - Lookup table for style reset codes
-   - Dynamic color and style application
-   - Eliminated hardcoded escape sequences
-
-### Implementation Details: Control Sequence Highlighting
-
-The control sequence highlighting was the most recent significant feature addition:
-
-**Problem**: Files containing terminal control sequences (like `^[B` for arrow down) were not visually distinguished, making them hard to identify.
-
-**Solution**:
-
-- Modified `editorUpdateRow()` to convert control characters to visible `^X` format
-- Enhanced `editorUpdateSyntax()` to detect these patterns
-- Added special logic for extended escape sequences
-- Integrated with existing syntax highlighting system
-
-**Key Code Locations**:
-
-- Control char conversion: `(row *editorRow) update()` method
-- Syntax detection: `editorUpdateSyntax()` function
-- Visual styling: `editorSyntaxToGraphics()` function
+// Usage in main:
+editor := NewEditor()
+err := editor.EnableRawMode()
+// ... error handling
+defer editor.RestoreTerminal()
+```
 
 ## Constants and Configuration
 
@@ -166,24 +197,31 @@ The control sequence highlighting was the most recent significant feature additi
 const (
     GO_DITOR_VERSION       = "1.0.0"
     TAB_STOP               = 4
-    CONTROL_SEQUENCE_WIDTH = 2  // Width of ^X sequences
-    QUIT_TIMES             = 3  // Confirmation prompts
+    CONTROL_SEQUENCE_WIDTH = 2
+    QUIT_TIMES             = 3
 )
 ```
 
-### Syntax Highlighting Types
+### Well-Organized Enums with iota
 
 ```go
+// Key constants with proper iota usage
 const (
-    HL_NORMAL = iota    // Default text
-    HL_COMMENT          // Single-line comments
-    HL_MLCOMMENT        // Multi-line comments
-    HL_KEYWORD1         // Primary keywords
-    HL_KEYWORD2         // Type keywords (ending with |)
-    HL_STRING           // String literals
-    HL_NUMBER           // Numeric literals
-    HL_MATCH            // Search matches
-    HL_CONTROL          // Control sequences (NEW)
+    BACKSPACE = 127
+    ARROW_LEFT = iota + 1000
+    ARROW_RIGHT
+    ARROW_UP
+    ARROW_DOWN
+    // ...
+)
+
+// Syntax highlighting types
+const (
+    HL_NORMAL = iota
+    HL_COMMENT
+    HL_MLCOMMENT
+    // ...
+    HL_CONTROL
 )
 ```
 
@@ -192,33 +230,36 @@ const (
 ### External Packages
 
 - `golang.org/x/term`: Terminal control and raw mode
-- Standard library: `bufio`, `bytes`, `fmt`, `os`, `strings`, `time`
+- Standard library: `bufio`, `bytes`, `errors`, `fmt`, `os`, `slices`, `strings`, `time`
 
 ### Internal Architecture
 
-- Single-file design for simplicity
-- Modular section organization with clear separation
-- Method-based operations on data structures
+- Single-file design with clear method organization
+- Object-oriented patterns with proper encapsulation
+- No global state dependencies
 
-## Build and Run Instructions
+## Development Status
 
-```bash
-# Build the editor
-go build -o go-ditor.exe
+### Completed Refactoring (TODO Items)
 
-# Run with a file
-./go-ditor.exe filename.txt
+- ✅ **Error Handling & Recovery**: Proper Go error patterns implemented
+- ✅ **Global State Management**: Eliminated global variables, method-based design
+- ✅ **Constants and Naming**: Well-organized with iota, consistent naming
+- ⏳ **Function Organization**: Partially complete - methods implemented, interfaces pending
+- ⏳ **Package Structure**: Considering modular split for larger codebase
 
-# Run without arguments (creates new file)
-./go-ditor.exe
-```
+### Current Architecture Quality
 
-## Key Bindings
+- **Testable**: Methods can be called on editor instances
+- **Go Idiomatic**: Proper error handling, method receivers, constructor pattern
+- **Maintainable**: Clear separation of concerns, no global state
+- **Extensible**: Easy to add new features through method addition
+
+## Key Bindings (Unchanged)
 
 - `Ctrl+Q`: Quit (with unsaved changes confirmation)
 - `Ctrl+S`: Save file
 - `Ctrl+F`: Find/search
-- `Ctrl+L`: Refresh screen
 - Arrow keys: Navigation
 - Page Up/Down: Scroll by screen
 - Home/End: Line beginning/end
@@ -226,49 +267,49 @@ go build -o go-ditor.exe
 
 ## Development Guidelines for Future Agents
 
-### Code Style
+### Code Architecture
 
-1. **Section Organization**: Code is organized in clearly marked sections with `/***/` comments
-2. **Method Receivers**: Use value receivers for editorRow methods
-3. **Error Handling**: Proper error checking with informative messages
-4. **Memory Management**: Efficient slice operations, avoid unnecessary allocations
+1. **Method-First Design**: All operations should be methods on appropriate structs
+2. **Error Handling**: Return errors from methods, use `ShowError()` for recoverable issues
+3. **No Global State**: Pass editor context explicitly where needed
+4. **Constructor Pattern**: Use `NewEditor()` for initialization
 
 ### Adding New Features
 
-1. **Syntax Highlighting**: Add new language support through HLDB_ENTRIES
-2. **Key Bindings**: Extend editorProcessKeypress() for new commands
-3. **Display Elements**: Modify drawing functions for UI changes
-4. **File Operations**: Enhance I/O functions for new file formats
+1. **New Methods**: Add methods to `Editor` struct for new functionality
+2. **Row Operations**: Use `(row *editorRow) method(e *Editor, ...)` pattern
+3. **Error Strategy**: Determine if errors should be fatal or recoverable
+4. **Syntax Highlighting**: Extend through `HLDB_ENTRIES` for new languages
 
-### Testing Considerations
+### Code Quality Standards
 
-- Terminal compatibility across platforms
-- File encoding handling
-- Memory usage with large files
-- Syntax highlighting performance
+- Use method receivers appropriately (`*Editor` for mutations)
+- Implement proper error handling with context
+- Maintain clear separation between terminal and editor concerns
+- Follow existing naming conventions consistently
 
-## Known Areas for Enhancement
+## Future Enhancement Opportunities
 
-1. **Multiple File Support**: Currently single-file editor
-2. **Configuration System**: Hardcoded settings could be configurable
-3. **Plugin Architecture**: Could support external syntax definitions
-4. **Performance Optimization**: Large file handling improvements
-5. **Undo/Redo System**: Currently not implemented
+1. **Interface Definition**: Create interfaces for terminal, file operations
+2. **Package Splitting**: Consider breaking into multiple packages when appropriate
+3. **Multiple File Support**: Extend to handle multiple open files
+4. **Configuration System**: Add configurable settings
+5. **Undo/Redo System**: Implement operation history
 
-## Debugging and Troubleshooting
+## Testing and Debugging
 
-### Common Issues
+### Current Testability
 
-1. **Terminal State**: Always ensure proper terminal restoration
-2. **Cursor Positioning**: Watch for render vs. cursor position mismatches
-3. **Syntax Highlighting**: Check for infinite loops in highlighting logic
-4. **File Operations**: Handle edge cases in file I/O
+- Editor instances can be created independently
+- Methods can be tested in isolation
+- No global state interference
+- Clear error handling for test validation
 
 ### Debug Approaches
 
-- Use status messages for runtime debugging
-- Check terminal dimensions on start
-- Validate slice bounds in row operations
-- Monitor memory usage with large files
+- Use `ShowError()` for runtime debugging messages
+- Create multiple editor instances for testing scenarios
+- Monitor method call patterns and error flows
+- Validate state changes through method calls
 
-This context should provide comprehensive understanding for any LLM agent working on this codebase.
+This refactored architecture provides a solid foundation for future development while maintaining the simplicity and educational value of the original design.

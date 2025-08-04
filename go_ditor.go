@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -90,7 +91,13 @@ type editorRow struct {
 	hlOpenComment bool
 }
 
-type editorConfig struct {
+// Terminal handles terminal-specific operations
+type Terminal struct {
+	originalState *term.State
+}
+
+// Editor represents the text editor state
+type Editor struct {
 	cx, cy            int
 	rx                int
 	rowOffset         int
@@ -104,12 +111,8 @@ type editorConfig struct {
 	statusMessage     string
 	statusMessageTime time.Time
 	syntax            *editorSyntax
-	originalState     *term.State
+	terminal          *Terminal
 }
-
-var (
-	E editorConfig // Global editor configuration
-)
 
 /*** filetypes ***/
 
@@ -144,30 +147,30 @@ var HLDB_ENTRIES = []editorSyntax{
 
 /*** terminal ***/
 
-// die restores terminal, prints an error message and exits the program
-func die(format string, args ...any) {
-	restoreTerminal()
+// Die restores terminal, prints an error message and exits the program
+func (e *Editor) Die(format string, args ...any) {
+	e.RestoreTerminal()
 	os.Stdout.Write([]byte(CLEAR_SCREEN))
 	os.Stdout.Write([]byte(CURSOR_HOME))
 	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
 	os.Exit(1)
 }
 
-// showError displays an error message in the status bar instead of terminating
-func showError(format string, args ...any) {
-	editorSetStatusMessage("Warn: "+format, args...)
+// ShowError displays an error message in the status bar instead of terminating
+func (e *Editor) ShowError(format string, args ...any) {
+	e.SetStatusMessage("Warn: "+format, args...)
 }
 
 // Enable raw mode for terminal input.
 // This allows us to read every input key and positions the cursor freely
-func enableRawMode() error {
+func (e *Editor) EnableRawMode() error {
 	// Check if stdin is a terminal
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return errors.New("not running in a terminal")
 	}
 
 	var err error
-	E.originalState, err = term.MakeRaw(int(os.Stdin.Fd()))
+	e.terminal.originalState, err = term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		return errors.New("enabling terminal raw mode: " + err.Error())
 	}
@@ -175,14 +178,14 @@ func enableRawMode() error {
 }
 
 // Restore the original terminal state, disabling raw mode.
-func restoreTerminal() {
-	if E.originalState != nil {
-		term.Restore(int(os.Stdin.Fd()), E.originalState)
-		E.originalState = nil // Prevent multiple restoration attempts
+func (e *Editor) RestoreTerminal() {
+	if e.terminal != nil && e.terminal.originalState != nil {
+		term.Restore(int(os.Stdin.Fd()), e.terminal.originalState)
+		e.terminal.originalState = nil // Prevent multiple restoration attempts
 	}
 }
 
-func editorReadKey() (int, error) {
+func readKey() (int, error) {
 	buf := make([]byte, 1)
 	var nread int
 	var err error
@@ -283,21 +286,21 @@ func isSeparator(c int) bool {
 	return false
 }
 
-func editorUpdateSyntax(row *editorRow) {
+func (row *editorRow) UpdateSyntax(e *Editor) {
 	row.hl = make([]int, len(row.render))
 	for i := range row.hl { // uncessary but ensures hl is initialized
 		row.hl[i] = HL_NORMAL // Default to normal highlighting
 	}
 
-	if E.syntax == nil {
+	if e.syntax == nil {
 		return
 	}
 
-	keywords := E.syntax.keywords
+	keywords := e.syntax.keywords
 
-	scs := E.syntax.singlelineCommentStart
-	mcs := E.syntax.multilineCommentStart
-	mce := E.syntax.multilineCommentEnd
+	scs := e.syntax.singlelineCommentStart
+	mcs := e.syntax.multilineCommentStart
+	mce := e.syntax.multilineCommentEnd
 
 	scsBytes := []byte(scs)
 	mcsBytes := []byte(mcs)
@@ -309,7 +312,7 @@ func editorUpdateSyntax(row *editorRow) {
 
 	prevSep := true
 	var inString byte = 0
-	var inComment bool = row.idx > 0 && E.row[row.idx-1].hlOpenComment
+	var inComment bool = row.idx > 0 && e.row[row.idx-1].hlOpenComment
 
 	for i := 0; i < len(row.render); {
 		c := row.render[i]
@@ -385,7 +388,7 @@ func editorUpdateSyntax(row *editorRow) {
 			}
 		}
 
-		if E.syntax.flags&HL_HIGHLIGHT_STRINGS != 0 {
+		if e.syntax.flags&HL_HIGHLIGHT_STRINGS != 0 {
 			if inString != 0 {
 				row.hl[i] = HL_STRING
 				if c == '\\' && i+1 < len(row.render) {
@@ -409,7 +412,7 @@ func editorUpdateSyntax(row *editorRow) {
 			}
 		}
 
-		if E.syntax.flags&HL_HIGHLIGHT_NUMBERS != 0 {
+		if e.syntax.flags&HL_HIGHLIGHT_NUMBERS != 0 {
 			if (isDigit(c) && (prevSep || prevHl == HL_NUMBER)) || (c == '.' && prevHl == HL_NUMBER) {
 				row.hl[i] = HL_NUMBER
 				i++
@@ -462,12 +465,12 @@ func editorUpdateSyntax(row *editorRow) {
 
 	changed := row.hlOpenComment != inComment
 	row.hlOpenComment = inComment
-	if changed && row.idx+1 < E.totalRows {
-		editorUpdateSyntax(&E.row[row.idx+1])
+	if changed && row.idx+1 < e.totalRows {
+		e.row[row.idx+1].UpdateSyntax(e)
 	}
 }
 
-func editorSyntaxToGraphics(hl int) (int, int) {
+func syntaxToGraphics(hl int) (int, int) {
 	switch hl {
 	case HL_COMMENT, HL_MLCOMMENT:
 		return ANSI_COLOR_CYAN, 0
@@ -496,13 +499,13 @@ func getStyleResetCode(style int) int {
 	return 0
 }
 
-func editorSelectSyntaxHighlight() {
-	E.syntax = nil
-	if E.filename == "" {
+func (e *Editor) SelectSyntaxHighlight() {
+	e.syntax = nil
+	if e.filename == "" {
 		return
 	}
 
-	filename := E.filename
+	filename := e.filename
 	var ext string
 	if lastDot := strings.LastIndex(filename, "."); lastDot != -1 {
 		ext = filename[lastDot:]
@@ -516,10 +519,10 @@ func editorSelectSyntaxHighlight() {
 			isExt := pattern[0] == '.'
 			if (isExt && ext != "" && ext == pattern) ||
 				(!isExt && strings.Contains(filename, pattern)) {
-				E.syntax = s
+				e.syntax = s
 
-				for filerow := range E.totalRows {
-					editorUpdateSyntax(&E.row[filerow])
+				for filerow := range e.totalRows {
+					e.row[filerow].UpdateSyntax(e)
 				}
 				return
 			}
@@ -562,7 +565,7 @@ func (row *editorRow) rxToCx(rx int) int {
 	return cx
 }
 
-func (row *editorRow) update() {
+func (row *editorRow) Update(e *Editor) {
 	tabs := 0
 	controlSequences := 0
 	for _, char := range row.chars {
@@ -605,54 +608,54 @@ func (row *editorRow) update() {
 	}
 
 	row.render = row.render[:idx] // Truncate to actual size
-	editorUpdateSyntax(row)
+	row.UpdateSyntax(e)
 }
 
-func editorInsertRow(at int, s []byte, rowlen int) {
-	if at < 0 || at > E.totalRows {
+func (e *Editor) InsertRow(at int, s []byte, rowlen int) {
+	if at < 0 || at > e.totalRows {
 		return
 	}
 
 	// Create new row
 	newRow := editorRow{
 		idx:           at,
-		chars:         append([]byte(nil), s[:rowlen]...), // Create copy of s with specified length
+		chars:         slices.Clone(s[:rowlen]), // Create copy of s with specified length
 		render:        nil,
 		hl:            nil,
 		hlOpenComment: false,
 	}
 
 	// Insert row using slice operations
-	E.row = append(E.row[:at], append([]editorRow{newRow}, E.row[at:]...)...)
+	e.row = append(e.row[:at], append([]editorRow{newRow}, e.row[at:]...)...)
 
 	// Update indices for rows that were shifted
-	for j := at + 1; j < E.totalRows+1; j++ {
-		E.row[j].idx = j
+	for j := at + 1; j < e.totalRows+1; j++ {
+		e.row[j].idx = j
 	}
 
-	E.row[at].update()
-	E.totalRows++
-	E.dirty++
+	e.row[at].Update(e)
+	e.totalRows++
+	e.dirty++
 }
 
-func editorDeleteRow(at int) {
-	if at < 0 || at >= E.totalRows {
+func (e *Editor) DeleteRow(at int) {
+	if at < 0 || at >= e.totalRows {
 		return
 	}
 
 	// Delete row using slice operations
-	E.row = append(E.row[:at], E.row[at+1:]...)
+	e.row = append(e.row[:at], e.row[at+1:]...)
 
 	// Update indices for remaining rows
-	for j := at; j < len(E.row); j++ {
-		E.row[j].idx = j
+	for j := at; j < len(e.row); j++ {
+		e.row[j].idx = j
 	}
 
-	E.totalRows--
-	E.dirty++
+	e.totalRows--
+	e.dirty++
 }
 
-func (row *editorRow) insertChar(at int, c int) {
+func (row *editorRow) InsertChar(e *Editor, at int, c int) {
 	if at < 0 || at > len(row.chars) {
 		at = len(row.chars)
 	}
@@ -660,92 +663,92 @@ func (row *editorRow) insertChar(at int, c int) {
 	// Insert character at position using slices
 	row.chars = append(row.chars[:at], append([]byte{byte(c)}, row.chars[at:]...)...)
 
-	row.update()
-	E.dirty++
+	row.Update(e)
+	e.dirty++
 }
 
-func (row *editorRow) appendBytes(s []byte) {
+func (row *editorRow) appendBytes(e *Editor, s []byte) {
 	row.chars = append(row.chars, s...)
 
-	row.update()
-	E.dirty++
+	row.Update(e)
+	e.dirty++
 }
 
-func (row *editorRow) deleteChar(at int) {
+func (row *editorRow) deleteChar(e *Editor, at int) {
 	if at < 0 || at >= len(row.chars) {
 		return
 	}
 
 	// Delete character using slice operations
-	row.chars = append(row.chars[:at], row.chars[at+1:]...)
+	row.chars = slices.Delete(row.chars, at, at+1)
 
-	row.update()
-	E.dirty++
+	row.Update(e)
+	e.dirty++
 }
 
 /*** editor operations ***/
 
-func editorInsertChar(c int) {
-	if E.cy == E.totalRows {
-		editorInsertRow(E.totalRows, []byte(""), 0)
+func (e *Editor) InsertChar(c int) {
+	if e.cy == e.totalRows {
+		e.InsertRow(e.totalRows, []byte(""), 0)
 	}
-	E.row[E.cy].insertChar(E.cx, c)
-	E.cx++
+	e.row[e.cy].InsertChar(e, e.cx, c)
+	e.cx++
 }
 
-func editorInsertNewline() {
-	if E.cx == 0 {
-		editorInsertRow(E.cy, []byte(""), 0)
+func (e *Editor) InsertNewline() {
+	if e.cx == 0 {
+		e.InsertRow(e.cy, []byte(""), 0)
 	} else {
-		row := &E.row[E.cy]
+		row := &e.row[e.cy]
 
 		// Insert new row with text from cursor to end of line
-		remainingText := make([]byte, len(row.chars)-E.cx)
-		copy(remainingText, row.chars[E.cx:])
-		editorInsertRow(E.cy+1, remainingText, len(row.chars)-E.cx)
+		remainingText := make([]byte, len(row.chars)-e.cx)
+		copy(remainingText, row.chars[e.cx:])
+		e.InsertRow(e.cy+1, remainingText, len(row.chars)-e.cx)
 
 		// Truncate current row to text before cursor
-		row = &E.row[E.cy]
-		row.chars = row.chars[:E.cx]
-		row.update()
+		row = &e.row[e.cy]
+		row.chars = row.chars[:e.cx]
+		row.Update(e)
 	}
-	E.cy++
-	E.cx = 0
+	e.cy++
+	e.cx = 0
 }
 
-func editorDeleteChar() {
-	if E.cy == E.totalRows {
+func (e *Editor) DeleteChar() {
+	if e.cy == e.totalRows {
 		return
 	}
-	if E.cx == 0 && E.cy == 0 {
+	if e.cx == 0 && e.cy == 0 {
 		return
 	}
 
-	row := &E.row[E.cy]
-	if E.cx > 0 {
-		row.deleteChar(E.cx - 1)
-		E.cx--
+	row := &e.row[e.cy]
+	if e.cx > 0 {
+		row.deleteChar(e, e.cx-1)
+		e.cx--
 	} else {
-		E.cx = len(E.row[E.cy-1].chars)
-		E.row[E.cy-1].appendBytes(row.chars)
-		editorDeleteRow(E.cy) // Delete the current row after appending its content to the previous row
-		E.cy--                // Move cursor up to the previous row
+		e.cx = len(e.row[e.cy-1].chars)
+		e.row[e.cy-1].appendBytes(e, row.chars)
+		e.DeleteRow(e.cy) // Delete the current row after appending its content to the previous row
+		e.cy--            // Move cursor up to the previous row
 	}
 }
 
 /*** file i/o ***/
 
-func editorRowsToString() ([]byte, int) {
+func (e *Editor) RowsToString() ([]byte, int) {
 	var buf strings.Builder
 
 	// Pre-calculate total size for efficiency
 	totalSize := 0
-	for _, row := range E.row {
+	for _, row := range e.row {
 		totalSize += len(row.chars) + 1 // +1 for newline
 	}
 	buf.Grow(totalSize)
 
-	for _, row := range E.row {
+	for _, row := range e.row {
 		buf.Write(row.chars)
 		buf.WriteByte('\n')
 	}
@@ -754,15 +757,15 @@ func editorRowsToString() ([]byte, int) {
 	return []byte(result), len(result)
 }
 
-func editorOpen(filename string) error {
-	E.filename = filename
+func (e *Editor) Open(filename string) error {
+	e.filename = filename
 	file, err := os.Open(filename)
 	if err != nil {
 		return fmt.Errorf("could not open file '%s'", filename)
 	}
 	defer file.Close()
 
-	editorSelectSyntaxHighlight()
+	e.SelectSyntaxHighlight()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -772,32 +775,32 @@ func editorOpen(filename string) error {
 			line = line[:len(line)-1]
 		}
 
-		editorInsertRow(E.totalRows, []byte(line), len(line))
+		e.InsertRow(e.totalRows, []byte(line), len(line))
 	}
 
 	if err := scanner.Err(); err != nil {
-		die("reading file: " + err.Error())
+		e.Die("reading file: " + err.Error())
 	}
-	E.dirty = 0
+	e.dirty = 0
 	return nil
 }
 
-func editorSave() {
-	if E.filename == "" {
-		E.filename = editorPrompt("Save as: %s (ESC to cancel)", nil)
-		if E.filename == "" {
-			editorSetStatusMessage("Save aborted")
+func (e *Editor) Save() {
+	if e.filename == "" {
+		e.filename = e.Prompt("Save as: %s (ESC to cancel)", nil)
+		if e.filename == "" {
+			e.SetStatusMessage("Save aborted")
 			return
 		}
-		editorSelectSyntaxHighlight()
+		e.SelectSyntaxHighlight()
 	}
 
-	buf, length := editorRowsToString()
+	buf, length := e.RowsToString()
 
 	// Open file for read/write, create if not exists (equivalent to O_RDWR | O_CREAT, 0644)
-	file, err := os.OpenFile(E.filename, os.O_RDWR|os.O_CREATE, 0644)
+	file, err := os.OpenFile(e.filename, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		editorSetStatusMessage("Can't save! I/O error: %v", err)
+		e.SetStatusMessage("Can't save! I/O error: %v", err)
 		return
 	}
 	defer file.Close()
@@ -805,26 +808,26 @@ func editorSave() {
 	// Truncate file to exact length (equivalent to ftruncate(fd, len))
 	err = file.Truncate(int64(length))
 	if err != nil {
-		editorSetStatusMessage("Can't save! I/O error: %v", err)
+		e.SetStatusMessage("Can't save! I/O error: %v", err)
 		return
 	}
 
 	// Write buffer to file (equivalent to write(fd, buf, len))
 	bytesWritten, err := file.Write(buf)
 	if err != nil {
-		editorSetStatusMessage("Can't save! I/O error: %v", err)
+		e.SetStatusMessage("Can't save! I/O error: %v", err)
 		return
 	}
 
 	// Check if all bytes were written
 	if bytesWritten != length {
-		editorSetStatusMessage("Can't save! Partial write: %d/%d bytes", bytesWritten, length)
+		e.SetStatusMessage("Can't save! Partial write: %d/%d bytes", bytesWritten, length)
 		return
 	}
 
 	// Success message with byte count (equivalent to C version's success case)
-	editorSetStatusMessage("%d bytes written to disk", length)
-	E.dirty = 0 // Reset dirty flag after successful save
+	e.SetStatusMessage("%d bytes written to disk", length)
+	e.dirty = 0 // Reset dirty flag after successful save
 }
 
 /*** find ***/
@@ -836,11 +839,11 @@ var (
 	savedHl     []int = nil
 )
 
-func editorFindCallback(query []byte, key int) {
+func (e *Editor) FindCallback(query []byte, key int) {
 
 	if savedHl != nil {
 		// Restore previous highlights
-		copy(E.row[savedHlLine].hl, savedHl)
+		copy(e.row[savedHlLine].hl, savedHl)
 		savedHl = nil
 	}
 
@@ -863,21 +866,21 @@ func editorFindCallback(query []byte, key int) {
 	}
 	current := lastMatch
 
-	for range E.totalRows {
+	for range e.totalRows {
 		current += direction
 		if current == -1 {
-			current = E.totalRows - 1
-		} else if current == E.totalRows {
+			current = e.totalRows - 1
+		} else if current == e.totalRows {
 			current = 0
 		}
 
-		row := &E.row[current]
+		row := &e.row[current]
 		match := bytes.Index(row.render, query)
 		if match != -1 {
 			lastMatch = current
-			E.cy = current
-			E.cx = row.rxToCx(match)
-			E.rowOffset = E.totalRows
+			e.cy = current
+			e.cx = row.rxToCx(match)
+			e.rowOffset = e.totalRows
 
 			savedHlLine = current
 			savedHl = make([]int, len(row.hl))
@@ -891,19 +894,19 @@ func editorFindCallback(query []byte, key int) {
 	}
 }
 
-func editorFind() {
-	savedCx := E.cx
-	savedCy := E.cy
-	savedColOffset := E.colOffset
-	savedRowOffset := E.rowOffset
+func (e *Editor) Find() {
+	savedCx := e.cx
+	savedCy := e.cy
+	savedColOffset := e.colOffset
+	savedRowOffset := e.rowOffset
 
-	query := editorPrompt("Search: %s (Use ESC/Arrows/Enter)", editorFindCallback)
+	query := e.Prompt("Search: %s (Use ESC/Arrows/Enter)", e.FindCallback)
 
 	if query == "" {
-		E.cx = savedCx
-		E.cy = savedCy
-		E.colOffset = savedColOffset
-		E.rowOffset = savedRowOffset
+		e.cx = savedCx
+		e.cy = savedCy
+		e.colOffset = savedColOffset
+		e.rowOffset = savedRowOffset
 	}
 }
 
@@ -921,35 +924,35 @@ func (ab *appendBuffer) append(s []byte) {
 
 /*** output ***/
 
-func editorScroll() {
-	E.rx = 0
-	if E.cy < E.totalRows {
-		E.rx = E.row[E.cy].cxToRx(E.cx)
+func (e *Editor) Scroll() {
+	e.rx = 0
+	if e.cy < e.totalRows {
+		e.rx = e.row[e.cy].cxToRx(e.cx)
 	}
 
-	if E.cy < E.rowOffset {
-		E.rowOffset = E.cy
+	if e.cy < e.rowOffset {
+		e.rowOffset = e.cy
 	}
-	if E.cy >= E.rowOffset+E.screenRows {
-		E.rowOffset = E.cy - E.screenRows + 1
+	if e.cy >= e.rowOffset+e.screenRows {
+		e.rowOffset = e.cy - e.screenRows + 1
 	}
 
-	if E.rx < E.colOffset {
-		E.colOffset = E.rx
+	if e.rx < e.colOffset {
+		e.colOffset = e.rx
 	}
-	if E.rx >= E.colOffset+E.screenCols {
-		E.colOffset = E.rx - E.screenCols + 1
+	if e.rx >= e.colOffset+e.screenCols {
+		e.colOffset = e.rx - e.screenCols + 1
 	}
 }
 
-func editorDrawRows(abuf *appendBuffer) {
-	for y := range E.screenRows {
-		filerow := y + E.rowOffset
-		if filerow >= E.totalRows {
-			if E.totalRows == 0 && y == E.screenRows/3 {
+func (e *Editor) DrawRows(abuf *appendBuffer) {
+	for y := range e.screenRows {
+		filerow := y + e.rowOffset
+		if filerow >= e.totalRows {
+			if e.totalRows == 0 && y == e.screenRows/3 {
 				welcome := "GO-DITOR editor -- version " + GO_DITOR_VERSION
-				welcomelen := min(len(welcome), E.screenCols)
-				padding := (E.screenCols - welcomelen) / 2
+				welcomelen := min(len(welcome), e.screenCols)
+				padding := (e.screenCols - welcomelen) / 2
 				if padding > 0 {
 					abuf.append([]byte("~"))
 					padding--
@@ -962,11 +965,11 @@ func editorDrawRows(abuf *appendBuffer) {
 				abuf.append([]byte("~"))
 			}
 		} else {
-			lineLen := min(max(len(E.row[filerow].render)-E.colOffset, 0), E.screenCols)
+			lineLen := min(max(len(e.row[filerow].render)-e.colOffset, 0), e.screenCols)
 			// Character-by-character rendering with syntax highlighting
-			start := E.colOffset
-			hl := E.row[filerow].hl
-			render := E.row[filerow].render
+			start := e.colOffset
+			hl := e.row[filerow].hl
+			render := e.row[filerow].render
 			currentColor := -1
 			currentStyle := 0
 			for j := range lineLen {
@@ -988,7 +991,7 @@ func editorDrawRows(abuf *appendBuffer) {
 					abuf.append([]byte{c})
 				} else {
 					// Get both color and style from the combined function
-					color, style := editorSyntaxToGraphics(h)
+					color, style := syntaxToGraphics(h)
 
 					// Apply style if different from current
 					if currentStyle != style {
@@ -1029,36 +1032,36 @@ func editorDrawRows(abuf *appendBuffer) {
 	}
 }
 
-func editorDrawStatusBar(abuf *appendBuffer) {
+func (e *Editor) DrawStatusBar(abuf *appendBuffer) {
 	abuf.append([]byte(COLORS_INVERT)) // Invert colors for status bar
 
 	var status string
 	var rstatus string
 	filename := "[No Name]"
-	if E.filename != "" {
-		filename = E.filename
+	if e.filename != "" {
+		filename = e.filename
 		// Truncate filename to 20 characters if needed
 		if len(filename) > 20 {
 			filename = filename[:20]
 		}
 	}
 	dirtyFlag := ""
-	if E.dirty > 0 {
+	if e.dirty > 0 {
 		dirtyFlag = "(modified)"
 	}
-	status = fmt.Sprintf("%.20s - %d lines %s %d", filename, E.totalRows, dirtyFlag, E.dirty)
-	statusLen := min(len(status), E.screenCols)
+	status = fmt.Sprintf("%.20s - %d lines %s %d", filename, e.totalRows, dirtyFlag, e.dirty)
+	statusLen := min(len(status), e.screenCols)
 
 	filetype := "no ft"
-	if E.syntax != nil {
-		filetype = E.syntax.filetype
+	if e.syntax != nil {
+		filetype = e.syntax.filetype
 	}
-	rstatus = fmt.Sprintf("%s | %d/%d", filetype, E.cy+1, E.totalRows)
+	rstatus = fmt.Sprintf("%s | %d/%d", filetype, e.cy+1, e.totalRows)
 	rstatusLen := len(rstatus)
 	abuf.append([]byte(status[:statusLen]))
 
-	for statusLen < E.screenCols {
-		if E.screenCols-statusLen == rstatusLen {
+	for statusLen < e.screenCols {
+		if e.screenCols-statusLen == rstatusLen {
 			abuf.append([]byte(rstatus))
 			break
 		} else {
@@ -1071,51 +1074,51 @@ func editorDrawStatusBar(abuf *appendBuffer) {
 	abuf.append([]byte("\r\n"))
 }
 
-func editorDrawMessageBar(abuf *appendBuffer) {
+func (e *Editor) DrawMessageBar(abuf *appendBuffer) {
 	abuf.append([]byte(CLEAR_LINE))
-	messageLen := min(len(E.statusMessage), E.screenCols)
-	if time.Since(E.statusMessageTime) < 5*time.Second {
-		abuf.append([]byte(E.statusMessage[:messageLen]))
+	messageLen := min(len(e.statusMessage), e.screenCols)
+	if time.Since(e.statusMessageTime) < 5*time.Second {
+		abuf.append([]byte(e.statusMessage[:messageLen]))
 	}
 }
 
-func editorRefreshScreen() {
-	editorScroll()
+func (e *Editor) RefreshScreen() {
+	e.Scroll()
 
 	var abuf appendBuffer
 
 	abuf.append([]byte(CURSOR_HIDE))
 	abuf.append([]byte(CURSOR_HOME)) // Move cursor to the top-left corner
 
-	editorDrawRows(&abuf)
-	editorDrawStatusBar(&abuf)
-	editorDrawMessageBar(&abuf)
+	e.DrawRows(&abuf)
+	e.DrawStatusBar(&abuf)
+	e.DrawMessageBar(&abuf)
 
-	abuf.append(fmt.Appendf(nil, CURSOR_POSITION_FORMAT, E.cy-E.rowOffset+1, E.rx-E.colOffset+1))
+	abuf.append(fmt.Appendf(nil, CURSOR_POSITION_FORMAT, e.cy-e.rowOffset+1, e.rx-e.colOffset+1))
 
 	abuf.append([]byte(CURSOR_SHOW))
 
 	os.Stdout.Write(abuf.b)
 }
 
-func editorSetStatusMessage(format string, args ...any) {
-	E.statusMessage = fmt.Sprintf(format, args...)
-	E.statusMessageTime = time.Now()
+func (e *Editor) SetStatusMessage(format string, args ...any) {
+	e.statusMessage = fmt.Sprintf(format, args...)
+	e.statusMessageTime = time.Now()
 }
 
 /*** input ***/
 
-func editorPrompt(prompt string, callback func([]byte, int)) string {
+func (e *Editor) Prompt(prompt string, callback func([]byte, int)) string {
 	bufSize := 128
 	buf := make([]byte, 0, bufSize)
 
 	for {
-		editorSetStatusMessage(prompt, string(buf))
-		editorRefreshScreen()
+		e.SetStatusMessage(prompt, string(buf))
+		e.RefreshScreen()
 
-		key, err := editorReadKey()
+		key, err := readKey()
 		if err != nil {
-			showError("%v", err)
+			e.ShowError("%v", err)
 			continue // Try again instead of terminating
 		}
 
@@ -1126,7 +1129,7 @@ func editorPrompt(prompt string, callback func([]byte, int)) string {
 			}
 
 		case '\x1b':
-			editorSetStatusMessage("")
+			e.SetStatusMessage("")
 			if callback != nil {
 				callback(buf, key)
 			}
@@ -1134,7 +1137,7 @@ func editorPrompt(prompt string, callback func([]byte, int)) string {
 
 		case '\r':
 			if len(buf) != 0 {
-				editorSetStatusMessage("")
+				e.SetStatusMessage("")
 				if callback != nil {
 					callback(buf, key)
 				}
@@ -1158,121 +1161,121 @@ func editorPrompt(prompt string, callback func([]byte, int)) string {
 	}
 }
 
-func editorMoveCursor(key int) {
+func (e *Editor) MoveCursor(key int) {
 	var row *editorRow
-	if E.cy >= E.totalRows {
+	if e.cy >= e.totalRows {
 		row = nil
 	} else {
-		row = &E.row[E.cy]
+		row = &e.row[e.cy]
 	}
 
 	switch key {
 	case ARROW_LEFT:
-		if E.cx != 0 {
-			E.cx--
-		} else if E.cy > 0 {
-			E.cy--
-			E.cx = len(E.row[E.cy].chars)
+		if e.cx != 0 {
+			e.cx--
+		} else if e.cy > 0 {
+			e.cy--
+			e.cx = len(e.row[e.cy].chars)
 		}
 	case ARROW_RIGHT:
-		if row != nil && E.cx < len(row.chars) {
-			E.cx++
-		} else if row != nil && E.cx == len(row.chars) {
-			E.cy++
-			E.cx = 0
+		if row != nil && e.cx < len(row.chars) {
+			e.cx++
+		} else if row != nil && e.cx == len(row.chars) {
+			e.cy++
+			e.cx = 0
 		}
 	case ARROW_UP:
-		if E.cy != 0 {
-			E.cy--
+		if e.cy != 0 {
+			e.cy--
 		}
 	case ARROW_DOWN:
-		if E.cy < E.totalRows {
-			E.cy++
+		if e.cy < e.totalRows {
+			e.cy++
 		}
 	}
 
-	if E.cy >= E.totalRows {
+	if e.cy >= e.totalRows {
 		row = nil
 	} else {
-		row = &E.row[E.cy]
+		row = &e.row[e.cy]
 	}
 	rowlen := 0
 	if row != nil {
 		rowlen = len(row.chars)
 	}
-	if E.cx > rowlen {
-		E.cx = rowlen
+	if e.cx > rowlen {
+		e.cx = rowlen
 	}
 }
 
 var quitTimes = QUIT_TIMES
 
-func editorProcessKeypress() {
+func (e *Editor) ProcessKeypress() {
 
-	key, err := editorReadKey()
+	key, err := readKey()
 	if err != nil {
-		showError("%v", err)
+		e.ShowError("%v", err)
 		return // Skip this keypress and continue
 	}
 
 	switch key {
 	case '\r':
-		editorInsertNewline()
+		e.InsertNewline()
 
 	case withControlKey('q'):
-		if E.dirty > 0 && quitTimes > 0 {
-			editorSetStatusMessage("WARNING: File has unsaved changes. Press Ctrl-Q %d more times to quit.", quitTimes)
+		if e.dirty > 0 && quitTimes > 0 {
+			e.SetStatusMessage("WARNING: File has unsaved changes. Press Ctrl-Q %d more times to quit.", quitTimes)
 			quitTimes--
 			return
 		}
 
-		restoreTerminal()
+		e.RestoreTerminal()
 		os.Stdout.Write([]byte(CLEAR_SCREEN))
 		os.Stdout.Write([]byte(CURSOR_HOME))
 		fmt.Println("Exiting GO-DITOR editor")
 		os.Exit(0)
 
 	case withControlKey('s'):
-		editorSave()
+		e.Save()
 
 	case HOME_KEY:
-		E.cx = 0
+		e.cx = 0
 
 	case END_KEY:
-		if E.cy < E.totalRows {
-			E.cx = len(E.row[E.cy].chars)
+		if e.cy < e.totalRows {
+			e.cx = len(e.row[e.cy].chars)
 		}
 
 	case withControlKey('f'):
-		editorFind()
+		e.Find()
 
 	case BACKSPACE, withControlKey('h'), DELETE_KEY:
 		if key == DELETE_KEY {
-			editorMoveCursor(ARROW_RIGHT)
+			e.MoveCursor(ARROW_RIGHT)
 		}
-		editorDeleteChar()
+		e.DeleteChar()
 
 	case PAGE_UP:
-		E.cy = E.rowOffset
-		for range E.screenRows {
-			editorMoveCursor(ARROW_UP)
+		e.cy = e.rowOffset
+		for range e.screenRows {
+			e.MoveCursor(ARROW_UP)
 		}
 
 	case PAGE_DOWN:
-		E.cy = min(E.rowOffset+E.screenRows-1, E.totalRows)
-		for range E.screenRows {
-			editorMoveCursor(ARROW_DOWN)
+		e.cy = min(e.rowOffset+e.screenRows-1, e.totalRows)
+		for range e.screenRows {
+			e.MoveCursor(ARROW_DOWN)
 		}
 
 	case ARROW_LEFT, ARROW_RIGHT, ARROW_UP, ARROW_DOWN:
-		editorMoveCursor(key)
+		e.MoveCursor(key)
 
 	case withControlKey('l'):
 	case '\x1b':
 		break
 
 	default:
-		editorInsertChar(key)
+		e.InsertChar(key)
 	}
 
 	quitTimes = QUIT_TIMES // Reset quit times after processing a key
@@ -1280,55 +1283,68 @@ func editorProcessKeypress() {
 
 /*** init ***/
 
-func initEditor() error {
-	E.cx, E.cy = 0, 0
-	E.rx = 0
-	E.rowOffset = 0
-	E.colOffset = 0
-	E.totalRows = 0
-	E.row = make([]editorRow, 0)
-	E.dirty = 0
-	E.filename = ""
-	E.statusMessage = ""
-	E.statusMessageTime = time.Time{}
-	E.syntax = nil
+// NewTerminal creates a new Terminal instance
+func NewTerminal() *Terminal {
+	return &Terminal{}
+}
+
+// NewEditor creates a new Editor instance with proper initialization
+func NewEditor() Editor {
+	return Editor{
+		terminal: NewTerminal(),
+	}
+}
+
+func (e *Editor) Init() error {
+	e.cx, e.cy = 0, 0
+	e.rx = 0
+	e.rowOffset = 0
+	e.colOffset = 0
+	e.totalRows = 0
+	e.row = make([]editorRow, 0)
+	e.dirty = 0
+	e.filename = ""
+	e.statusMessage = ""
+	e.statusMessageTime = time.Time{}
+	e.syntax = nil
 
 	var err error
-	E.screenRows, E.screenCols, err = getWindowsSize()
+	e.screenRows, e.screenCols, err = getWindowsSize()
 	if err != nil {
 		return errors.New("getting window size")
 	}
-	E.screenRows -= 2
+	e.screenRows -= 2
 	return nil
 }
 
 func main() {
+	editor := NewEditor()
+
 	args := os.Args[1:]
-	err := enableRawMode()
+	err := editor.EnableRawMode()
 	if err != nil {
-		die("enabling raw mode: %s", err.Error())
+		editor.Die("enabling raw mode: %s", err.Error())
 	}
-	defer restoreTerminal()
+	defer editor.RestoreTerminal()
 
-	err = initEditor()
+	err = editor.Init()
 	if err != nil {
-		die("initializing editor: %s", err.Error())
+		editor.Die("initializing editor: %s", err.Error())
 	}
 
-	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find")
+	editor.SetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find")
 
 	if len(args) >= 1 {
-		err = editorOpen(args[0])
+		err = editor.Open(args[0])
 		if err != nil {
 			// File open errors are recoverable - show error and continue with empty file
-			showError("%v", err)
-			E.filename = args[0] // Keep the filename for saving later
+			editor.ShowError("%v", err)
+			editor.filename = args[0] // Keep the filename for saving later
 		}
 	}
 
 	for {
-		editorRefreshScreen()
-		editorProcessKeypress()
+		editor.RefreshScreen()
+		editor.ProcessKeypress()
 	}
-
 }

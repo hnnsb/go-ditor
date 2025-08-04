@@ -5,6 +5,7 @@ import (
 )
 
 func TestEditorRowDeleteChar(t *testing.T) {
+	e := &Editor{}
 	// Create a test row
 	row := &editorRow{
 		idx:           0,
@@ -15,10 +16,10 @@ func TestEditorRowDeleteChar(t *testing.T) {
 	}
 
 	// Initialize the render and hl slices
-	row.update()
+	row.Update(e)
 
 	// Test deleting a character
-	row.deleteChar(1) // Delete 'e' from "hello"
+	row.deleteChar(e, 1) // Delete 'e' from "hello"
 
 	// Check if the character was deleted correctly
 	expected := "hllo"
@@ -34,6 +35,7 @@ func TestEditorRowDeleteChar(t *testing.T) {
 }
 
 func TestEditorRowDeleteCharMultiple(t *testing.T) {
+	e := &Editor{}
 	// Create a test row
 	row := &editorRow{
 		idx:           0,
@@ -44,11 +46,11 @@ func TestEditorRowDeleteCharMultiple(t *testing.T) {
 	}
 
 	// Initialize the render and hl slices
-	row.update()
+	row.Update(e)
 
 	// Test deleting multiple characters
-	row.deleteChar(0) // Delete 'a' from "abc" -> "bc"
-	row.deleteChar(0) // Delete 'b' from "bc" -> "c"
+	row.deleteChar(e, 0) // Delete 'a' from "abc" -> "bc"
+	row.deleteChar(e, 0) // Delete 'b' from "bc" -> "c"
 
 	// Check if the characters were deleted correctly
 	expected := "c"
