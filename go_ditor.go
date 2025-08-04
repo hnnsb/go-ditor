@@ -269,6 +269,16 @@ func getWindowsSize() (int, int, error) {
 	return rows, cols, err
 }
 
+func (e *Editor) Redraw() {
+	var err error
+	e.screenRows, e.screenCols, err = getWindowsSize()
+	if err != nil {
+		e.ShowError("%v", err)
+	}
+	e.screenRows -= 2 // Adjust for status bar and message bar
+	e.RefreshScreen()
+}
+
 /*** syntax highlighting ***/
 
 // Check if the character is a separator (whitespace, null, or punctuation)
@@ -1248,6 +1258,9 @@ func (e *Editor) ProcessKeypress() {
 
 	case withControlKey('f'):
 		e.Find()
+
+	case withControlKey('r'):
+		e.Redraw()
 
 	case BACKSPACE, withControlKey('h'), DELETE_KEY:
 		if key == DELETE_KEY {
