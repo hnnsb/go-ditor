@@ -8,9 +8,7 @@ func TestEditorRowDeleteChar(t *testing.T) {
 	// Create a test row
 	row := &editorRow{
 		idx:           0,
-		size:          5,
 		chars:         []byte("hello"),
-		rsize:         0,
 		render:        nil,
 		hl:            nil,
 		hlOpenComment: false,
@@ -24,14 +22,10 @@ func TestEditorRowDeleteChar(t *testing.T) {
 
 	// Check if the character was deleted correctly
 	expected := "hllo"
-	actual := string(row.chars[:row.size])
+	actual := string(row.chars)
 
 	if actual != expected {
 		t.Errorf("Expected %q, got %q", expected, actual)
-	}
-
-	if row.size != 4 {
-		t.Errorf("Expected size 4, got %d", row.size)
 	}
 
 	if len(row.chars) != 4 {
@@ -43,9 +37,7 @@ func TestEditorRowDeleteCharMultiple(t *testing.T) {
 	// Create a test row
 	row := &editorRow{
 		idx:           0,
-		size:          3,
 		chars:         []byte("abc"),
-		rsize:         0,
 		render:        nil,
 		hl:            nil,
 		hlOpenComment: false,
@@ -60,14 +52,10 @@ func TestEditorRowDeleteCharMultiple(t *testing.T) {
 
 	// Check if the characters were deleted correctly
 	expected := "c"
-	actual := string(row.chars[:row.size])
+	actual := string(row.chars)
 
 	if actual != expected {
 		t.Errorf("Expected %q, got %q", expected, actual)
-	}
-
-	if row.size != 1 {
-		t.Errorf("Expected size 1, got %d", row.size)
 	}
 
 	if len(row.chars) != 1 {

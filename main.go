@@ -83,9 +83,7 @@ type editorSyntax struct {
 
 type editorRow struct {
 	idx           int
-	size          int
 	chars         []byte
-	rsize         int
 	render        []byte
 	hl            []int
 	hlOpenComment bool
@@ -277,7 +275,7 @@ func isSeparator(c int) bool {
 }
 
 func editorUpdateSyntax(row *editorRow) {
-	row.hl = make([]int, row.rsize)
+	row.hl = make([]int, len(row.render))
 	for i := range row.hl { // uncessary but ensures hl is initialized
 		row.hl[i] = HL_NORMAL // Default to normal highlighting
 	}
@@ -304,7 +302,7 @@ func editorUpdateSyntax(row *editorRow) {
 	var inString byte = 0
 	var inComment bool = row.idx > 0 && E.row[row.idx-1].hlOpenComment
 
-	for i := 0; i < row.rsize; {
+	for i := 0; i < len(row.render); {
 		c := row.render[i]
 		prevHl := HL_NORMAL
 		if i > 0 {
@@ -312,13 +310,13 @@ func editorUpdateSyntax(row *editorRow) {
 		}
 
 		// Highlight control sequences like ^[ ^A ^B etc.
-		if inString == 0 && !inComment && c == '^' && i+1 < row.rsize {
+		if inString == 0 && !inComment && c == '^' && i+1 < len(row.render) {
 			row.hl[i] = HL_CONTROL
 			row.hl[i+1] = HL_CONTROL
 
-			if i+1 < row.rsize && row.render[i+1] == '[' {
+			if i+1 < len(row.render) && row.render[i+1] == '[' {
 				j := i + 2
-				for j < row.rsize {
+				for j < len(row.render) {
 					ch := row.render[j]
 					row.hl[j] = HL_CONTROL
 					j++
@@ -340,7 +338,7 @@ func editorUpdateSyntax(row *editorRow) {
 
 		if scsLen > 0 && inString == 0 && !inComment {
 			if bytes.HasPrefix(row.render[i:], scsBytes) {
-				for j := i; j < row.rsize; j++ {
+				for j := i; j < len(row.render); j++ {
 					row.hl[j] = HL_COMMENT
 				}
 				break
@@ -352,7 +350,7 @@ func editorUpdateSyntax(row *editorRow) {
 				row.hl[i] = HL_MLCOMMENT
 				if bytes.HasPrefix(row.render[i:], mceBytes) {
 					for j := range mceLen {
-						if i+j < row.rsize {
+						if i+j < len(row.render) {
 							row.hl[i+j] = HL_MLCOMMENT
 						} else {
 							break
@@ -367,7 +365,7 @@ func editorUpdateSyntax(row *editorRow) {
 			} else if bytes.HasPrefix(row.render[i:], mcsBytes) {
 				inComment = true
 				for j := range mcsLen {
-					if i+j < row.rsize {
+					if i+j < len(row.render) {
 						row.hl[i+j] = HL_MLCOMMENT
 					} else {
 						break // Avoid out of bounds
@@ -381,7 +379,7 @@ func editorUpdateSyntax(row *editorRow) {
 		if E.syntax.flags&HL_HIGHLIGHT_STRINGS != 0 {
 			if inString != 0 {
 				row.hl[i] = HL_STRING
-				if c == '\\' && i+1 < row.rsize {
+				if c == '\\' && i+1 < len(row.render) {
 					row.hl[i+1] = HL_STRING
 					i += 2
 					continue
@@ -421,7 +419,7 @@ func editorUpdateSyntax(row *editorRow) {
 					klen-- // Exclude the trailing '|'
 				}
 
-				if klen > 0 && i+klen <= row.rsize {
+				if klen > 0 && i+klen <= len(row.render) {
 					// Compare bytes directly without creating new slice
 					match := true
 					for k := 0; k < klen; k++ {
@@ -431,7 +429,7 @@ func editorUpdateSyntax(row *editorRow) {
 						}
 					}
 
-					if match && (i+klen >= row.rsize || isSeparator(int(row.render[i+klen]))) {
+					if match && (i+klen >= len(row.render) || isSeparator(int(row.render[i+klen]))) {
 						for k := range klen {
 							if isKw2 {
 								row.hl[i+k] = HL_KEYWORD2
@@ -540,7 +538,7 @@ func (row *editorRow) cxToRx(cx int) int {
 func (row *editorRow) rxToCx(rx int) int {
 	curRx := 0
 	var cx int
-	for cx = 0; cx < row.size; cx++ {
+	for cx = 0; cx < len(row.chars); cx++ {
 		if row.chars[cx] == '\t' {
 			curRx += (TAB_STOP - 1) - (curRx % TAB_STOP) // Expand tab to next TAB_STOP boundary
 		} else if isControl(row.chars[cx]) {
@@ -567,7 +565,7 @@ func (row *editorRow) update() {
 	}
 
 	// Size: for worst case tab expansion
-	row.render = make([]byte, row.size+tabs*(TAB_STOP-1)+controlSequences*(CONTROL_SEQUENCE_WIDTH-1))
+	row.render = make([]byte, len(row.chars)+tabs*(TAB_STOP-1)+controlSequences*(CONTROL_SEQUENCE_WIDTH-1))
 
 	idx := 0
 	for _, char := range row.chars {
@@ -597,7 +595,7 @@ func (row *editorRow) update() {
 		}
 	}
 
-	row.rsize = idx
+	row.render = row.render[:idx] // Truncate to actual size
 	editorUpdateSyntax(row)
 }
 
@@ -609,9 +607,7 @@ func editorInsertRow(at int, s []byte, rowlen int) {
 	// Create new row
 	newRow := editorRow{
 		idx:           at,
-		size:          rowlen,
-		chars:         append([]byte(nil), s...), // Create copy of s
-		rsize:         0,
+		chars:         append([]byte(nil), s[:rowlen]...), // Create copy of s with specified length
 		render:        nil,
 		hl:            nil,
 		hlOpenComment: false,
@@ -648,13 +644,12 @@ func editorDeleteRow(at int) {
 }
 
 func (row *editorRow) insertChar(at int, c int) {
-	if at < 0 || at > row.size {
-		at = row.size
+	if at < 0 || at > len(row.chars) {
+		at = len(row.chars)
 	}
 
 	// Insert character at position using slices
 	row.chars = append(row.chars[:at], append([]byte{byte(c)}, row.chars[at:]...)...)
-	row.size++
 
 	row.update()
 	E.dirty++
@@ -662,20 +657,18 @@ func (row *editorRow) insertChar(at int, c int) {
 
 func (row *editorRow) appendBytes(s []byte) {
 	row.chars = append(row.chars, s...)
-	row.size = len(row.chars)
 
 	row.update()
 	E.dirty++
 }
 
 func (row *editorRow) deleteChar(at int) {
-	if at < 0 || at >= row.size {
+	if at < 0 || at >= len(row.chars) {
 		return
 	}
 
 	// Delete character using slice operations
 	row.chars = append(row.chars[:at], row.chars[at+1:]...)
-	row.size = len(row.chars)
 
 	row.update()
 	E.dirty++
@@ -698,13 +691,12 @@ func editorInsertNewline() {
 		row := &E.row[E.cy]
 
 		// Insert new row with text from cursor to end of line
-		remainingText := make([]byte, row.size-E.cx)
-		copy(remainingText, row.chars[E.cx:row.size])
-		editorInsertRow(E.cy+1, remainingText, row.size-E.cx)
+		remainingText := make([]byte, len(row.chars)-E.cx)
+		copy(remainingText, row.chars[E.cx:])
+		editorInsertRow(E.cy+1, remainingText, len(row.chars)-E.cx)
 
 		// Truncate current row to text before cursor
 		row = &E.row[E.cy]
-		row.size = E.cx
 		row.chars = row.chars[:E.cx]
 		row.update()
 	}
@@ -725,7 +717,7 @@ func editorDeleteChar() {
 		row.deleteChar(E.cx - 1)
 		E.cx--
 	} else {
-		E.cx = E.row[E.cy-1].size
+		E.cx = len(E.row[E.cy-1].chars)
 		E.row[E.cy-1].appendBytes(row.chars)
 		editorDeleteRow(E.cy) // Delete the current row after appending its content to the previous row
 		E.cy--                // Move cursor up to the previous row
@@ -740,12 +732,12 @@ func editorRowsToString() ([]byte, int) {
 	// Pre-calculate total size for efficiency
 	totalSize := 0
 	for _, row := range E.row {
-		totalSize += row.size + 1 // +1 for newline
+		totalSize += len(row.chars) + 1 // +1 for newline
 	}
 	buf.Grow(totalSize)
 
 	for _, row := range E.row {
-		buf.Write(row.chars[:row.size])
+		buf.Write(row.chars)
 		buf.WriteByte('\n')
 	}
 
@@ -960,7 +952,7 @@ func editorDrawRows(abuf *appendBuffer) {
 				abuf.append([]byte("~"))
 			}
 		} else {
-			lineLen := min(max(E.row[filerow].rsize-E.colOffset, 0), E.screenCols)
+			lineLen := min(max(len(E.row[filerow].render)-E.colOffset, 0), E.screenCols)
 			// Character-by-character rendering with syntax highlighting
 			start := E.colOffset
 			hl := E.row[filerow].hl
@@ -1169,12 +1161,12 @@ func editorMoveCursor(key int) {
 			E.cx--
 		} else if E.cy > 0 {
 			E.cy--
-			E.cx = E.row[E.cy].size
+			E.cx = len(E.row[E.cy].chars)
 		}
 	case ARROW_RIGHT:
-		if row != nil && E.cx < row.size {
+		if row != nil && E.cx < len(row.chars) {
 			E.cx++
-		} else if row != nil && E.cx == row.size {
+		} else if row != nil && E.cx == len(row.chars) {
 			E.cy++
 			E.cx = 0
 		}
@@ -1195,7 +1187,7 @@ func editorMoveCursor(key int) {
 	}
 	rowlen := 0
 	if row != nil {
-		rowlen = row.size
+		rowlen = len(row.chars)
 	}
 	if E.cx > rowlen {
 		E.cx = rowlen
@@ -1236,7 +1228,7 @@ func editorProcessKeypress() {
 
 	case END_KEY:
 		if E.cy < E.totalRows {
-			E.cx = E.row[E.cy].size
+			E.cx = len(E.row[E.cy].chars)
 		}
 
 	case withControlKey('f'):
