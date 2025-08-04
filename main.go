@@ -508,8 +508,8 @@ func editorRowRxToCx(row *erow, rx int) int {
 
 func editorUpdateRow(row *erow) {
 	tabs := 0
-	for _, char := range row.chars {
-		if char == '\t' {
+	for j := 0; j < row.size; j++ {
+		if row.chars[j] == '\t' {
 			tabs++
 		}
 	}
@@ -518,8 +518,8 @@ func editorUpdateRow(row *erow) {
 	row.render = make([]byte, row.size+tabs*(TAB_STOP-1))
 
 	idx := 0
-	for _, char := range row.chars {
-		if char == '\t' {
+	for j := 0; j < row.size; j++ {
+		if row.chars[j] == '\t' {
 			row.render[idx] = ' '
 			idx++
 			// Add spaces until we reach the next TAB_STOP boundary
@@ -528,7 +528,7 @@ func editorUpdateRow(row *erow) {
 				idx++
 			}
 		} else {
-			row.render[idx] = char
+			row.render[idx] = row.chars[j]
 			idx++
 		}
 	}
@@ -633,6 +633,7 @@ func editorRowDeleteChar(erow *erow, at int) {
 	// Shift characters to the left to overwrite the deleted character
 	copy(erow.chars[at:], erow.chars[at+1:erow.size])
 	erow.size--
+	erow.chars = erow.chars[:erow.size] // Resize the slice to match the new size
 
 	editorUpdateRow(erow)
 	E.dirty++
