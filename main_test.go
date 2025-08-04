@@ -6,7 +6,7 @@ import (
 
 func TestEditorRowDeleteChar(t *testing.T) {
 	// Create a test row
-	row := &erow{
+	row := &editorRow{
 		idx:           0,
 		size:          5,
 		chars:         []byte("hello"),
@@ -17,15 +17,15 @@ func TestEditorRowDeleteChar(t *testing.T) {
 	}
 
 	// Initialize the render and hl slices
-	editorUpdateRow(row)
+	row.update()
 
 	// Test deleting a character
-	editorRowDeleteChar(row, 1) // Delete 'e' from "hello"
+	row.deleteChar(1) // Delete 'e' from "hello"
 
 	// Check if the character was deleted correctly
 	expected := "hllo"
 	actual := string(row.chars[:row.size])
-	
+
 	if actual != expected {
 		t.Errorf("Expected %q, got %q", expected, actual)
 	}
@@ -41,7 +41,7 @@ func TestEditorRowDeleteChar(t *testing.T) {
 
 func TestEditorRowDeleteCharMultiple(t *testing.T) {
 	// Create a test row
-	row := &erow{
+	row := &editorRow{
 		idx:           0,
 		size:          3,
 		chars:         []byte("abc"),
@@ -52,16 +52,16 @@ func TestEditorRowDeleteCharMultiple(t *testing.T) {
 	}
 
 	// Initialize the render and hl slices
-	editorUpdateRow(row)
+	row.update()
 
 	// Test deleting multiple characters
-	editorRowDeleteChar(row, 0) // Delete 'a' from "abc" -> "bc"
-	editorRowDeleteChar(row, 0) // Delete 'b' from "bc" -> "c"
+	row.deleteChar(0) // Delete 'a' from "abc" -> "bc"
+	row.deleteChar(0) // Delete 'b' from "bc" -> "c"
 
 	// Check if the characters were deleted correctly
 	expected := "c"
 	actual := string(row.chars[:row.size])
-	
+
 	if actual != expected {
 		t.Errorf("Expected %q, got %q", expected, actual)
 	}

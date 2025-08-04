@@ -81,7 +81,7 @@ type editorSyntax struct {
 	flags                  int
 }
 
-type erow struct {
+type editorRow struct {
 	idx           int
 	size          int
 	chars         []byte
@@ -99,9 +99,9 @@ type editorConfig struct {
 	screenRows        int
 	screenCols        int
 	totalRows         int
-	row               []erow
+	row               []editorRow
 	dirty             int // captures if and how much edits are made
-	filename          *string
+	filename          string
 	statusMessage     string
 	statusMessageTime time.Time
 	syntax            *editorSyntax
@@ -254,10 +254,9 @@ func editorReadKey() (int, error) {
 
 }
 
-func getWindowsSize(rows *int, cols *int) error {
-	var err error
-	*cols, *rows, err = term.GetSize(int(os.Stdout.Fd()))
-	return err
+func getWindowsSize() (int, int, error) {
+	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
+	return rows, cols, err
 }
 
 /*** syntax highlighting ***/
@@ -277,7 +276,7 @@ func isSeparator(c int) bool {
 	return false
 }
 
-func editorUpdateSyntax(row *erow) {
+func editorUpdateSyntax(row *editorRow) {
 	row.hl = make([]int, row.rsize)
 	for i := range row.hl { // uncessary but ensures hl is initialized
 		row.hl[i] = HL_NORMAL // Default to normal highlighting
@@ -482,11 +481,11 @@ func getStyleResetCode(style int) int {
 
 func editorSelectSyntaxHighlight() {
 	E.syntax = nil
-	if E.filename == nil {
+	if E.filename == "" {
 		return
 	}
 
-	filename := *E.filename
+	filename := E.filename
 	var ext string
 	if lastDot := strings.LastIndex(filename, "."); lastDot != -1 {
 		ext = filename[lastDot:]
@@ -514,7 +513,7 @@ func editorSelectSyntaxHighlight() {
 /*** row operations ***/
 
 // Convert cursor X to render X, since rendered characters may differ from original characters (e.g., tabs)
-func editorRowCxToRx(row *erow, cx int) int {
+func (row *editorRow) cxToRx(cx int) int {
 	rx := 0
 	for j := range cx {
 		if row.chars[j] == '\t' {
@@ -528,7 +527,7 @@ func editorRowCxToRx(row *erow, cx int) int {
 	return rx
 }
 
-func editorRowRxToCx(row *erow, rx int) int {
+func (row *editorRow) rxToCx(rx int) int {
 	curRx := 0
 	var cx int
 	for cx = 0; cx < row.size; cx++ {
@@ -546,7 +545,7 @@ func editorRowRxToCx(row *erow, rx int) int {
 	return cx
 }
 
-func editorUpdateRow(row *erow) {
+func (row *editorRow) update() {
 	tabs := 0
 	controlSequences := 0
 	for _, char := range row.chars {
@@ -597,7 +596,7 @@ func editorInsertRow(at int, s []byte, rowlen int) {
 		return
 	}
 
-	E.row = append(E.row, erow{})
+	E.row = append(E.row, editorRow{})
 	copy(E.row[at+1:], E.row[at:E.totalRows])
 	for j := at + 1; j < E.totalRows; j++ {
 		E.row[j].idx++
@@ -614,27 +613,15 @@ func editorInsertRow(at int, s []byte, rowlen int) {
 	E.row[at].hl = nil
 	E.row[at].hlOpenComment = false
 
-	editorUpdateRow(&E.row[at])
+	E.row[at].update()
 	E.totalRows++
 	E.dirty++
-}
-
-func editorFreeRow(erow *erow) {
-	if erow == nil {
-		return
-	}
-	erow.chars = nil
-	erow.render = nil
-	erow.hl = nil
 }
 
 func editorDeleteRow(at int) {
 	if at < 0 || at >= E.totalRows {
 		return
 	}
-
-	// Free the row's resources
-	editorFreeRow(&E.row[at])
 
 	// Shift rows down to fill the gap
 	copy(E.row[at:], E.row[at+1:E.totalRows])
@@ -648,49 +635,49 @@ func editorDeleteRow(at int) {
 	E.dirty++
 }
 
-func editorRowInsertChar(erow *erow, at int, c int) {
-	if at < 0 || at > erow.size {
-		at = erow.size
+func (row *editorRow) insertChar(at int, c int) {
+	if at < 0 || at > row.size {
+		at = row.size
 	}
 
 	// Grow the slice to accommodate the new character
-	erow.chars = append(erow.chars, 0) // Add space for one more character
+	row.chars = append(row.chars, 0) // Add space for one more character
 
 	// Shift characters to the right to make room for insertion
-	copy(erow.chars[at+1:], erow.chars[at:erow.size])
+	copy(row.chars[at+1:], row.chars[at:row.size])
 
-	erow.chars[at] = byte(c)
-	erow.size++
+	row.chars[at] = byte(c)
+	row.size++
 
-	editorUpdateRow(erow)
+	row.update()
 	E.dirty++
 }
 
-func editorRowAppendString(erow *erow, s []byte, slen int) {
-	newSize := erow.size + slen
+func (row *editorRow) appendBytes(s []byte, slen int) {
+	newSize := row.size + slen
 	newChars := make([]byte, newSize)
 
-	copy(newChars[:erow.size], erow.chars[:erow.size])
-	copy(newChars[erow.size:], s[:slen])
+	copy(newChars[:row.size], row.chars[:row.size])
+	copy(newChars[row.size:], s[:slen])
 
-	erow.chars = newChars
-	erow.size = newSize
+	row.chars = newChars
+	row.size = newSize
 
-	editorUpdateRow(erow)
+	row.update()
 	E.dirty++
 }
 
-func editorRowDeleteChar(erow *erow, at int) {
-	if at < 0 || at >= erow.size {
+func (row *editorRow) deleteChar(at int) {
+	if at < 0 || at >= row.size {
 		return
 	}
 
 	// Shift characters to the left to overwrite the deleted character
-	copy(erow.chars[at:], erow.chars[at+1:erow.size])
-	erow.size--
-	erow.chars = erow.chars[:erow.size] // Resize the slice to match the new size
+	copy(row.chars[at:], row.chars[at+1:row.size])
+	row.size--
+	row.chars = row.chars[:row.size] // Resize the slice to match the new size
 
-	editorUpdateRow(erow)
+	row.update()
 	E.dirty++
 }
 
@@ -700,7 +687,7 @@ func editorInsertChar(c int) {
 	if E.cy == E.totalRows {
 		editorInsertRow(E.totalRows, []byte(""), 0)
 	}
-	editorRowInsertChar(&E.row[E.cy], E.cx, c)
+	E.row[E.cy].insertChar(E.cx, c)
 	E.cx++
 }
 
@@ -719,7 +706,7 @@ func editorInsertNewline() {
 		row = &E.row[E.cy]
 		row.size = E.cx
 		row.chars = row.chars[:E.cx]
-		editorUpdateRow(row)
+		row.update()
 	}
 	E.cy++
 	E.cx = 0
@@ -735,11 +722,11 @@ func editorDeleteChar() {
 
 	row := &E.row[E.cy]
 	if E.cx > 0 {
-		editorRowDeleteChar(row, E.cx-1)
+		row.deleteChar(E.cx - 1)
 		E.cx--
 	} else {
 		E.cx = E.row[E.cy-1].size
-		editorRowAppendString(&E.row[E.cy-1], row.chars, row.size)
+		E.row[E.cy-1].appendBytes(row.chars, row.size)
 		editorDeleteRow(E.cy) // Delete the current row after appending its content to the previous row
 		E.cy--                // Move cursor up to the previous row
 	}
@@ -747,12 +734,11 @@ func editorDeleteChar() {
 
 /*** file i/o ***/
 
-func editorRowsToString(bufLen *int) []byte {
+func editorRowsToString() ([]byte, int) {
 	totalLength := 0
 	for _, row := range E.row {
 		totalLength += row.size + 1 // +1 for newline character
 	}
-	*bufLen = totalLength
 
 	buf := make([]byte, totalLength)
 	p := 0
@@ -764,12 +750,12 @@ func editorRowsToString(bufLen *int) []byte {
 		p++
 	}
 
-	return buf
+	return buf, totalLength
 }
 
-func editorOpen(filename *string) {
+func editorOpen(filename string) {
 	E.filename = filename
-	file, err := os.Open(*filename)
+	file, err := os.Open(filename)
 	if err != nil {
 		die("fopen")
 	}
@@ -795,20 +781,19 @@ func editorOpen(filename *string) {
 }
 
 func editorSave() {
-	if E.filename == nil {
+	if E.filename == "" {
 		E.filename = editorPrompt("Save as: %s (ESC to cancel)", nil)
-		if E.filename == nil {
+		if E.filename == "" {
 			editorSetStatusMessage("Save aborted")
 			return
 		}
 		editorSelectSyntaxHighlight()
 	}
 
-	var length int
-	buf := editorRowsToString(&length)
+	buf, length := editorRowsToString()
 
 	// Open file for read/write, create if not exists (equivalent to O_RDWR | O_CREAT, 0644)
-	file, err := os.OpenFile(*E.filename, os.O_RDWR|os.O_CREATE, 0644)
+	file, err := os.OpenFile(E.filename, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		editorSetStatusMessage("Can't save! I/O error: %v", err)
 		return
@@ -889,7 +874,7 @@ func editorFindCallback(query []byte, key int) {
 		if match != -1 {
 			lastMatch = current
 			E.cy = current
-			E.cx = editorRowRxToCx(row, match)
+			E.cx = row.rxToCx(match)
 			E.rowOffset = E.totalRows
 
 			savedHlLine = current
@@ -912,7 +897,7 @@ func editorFind() {
 
 	query := editorPrompt("Search: %s (Use ESC/Arrows/Enter)", editorFindCallback)
 
-	if query == nil {
+	if query == "" {
 		E.cx = savedCx
 		E.cy = savedCy
 		E.colOffset = savedColOffset
@@ -942,7 +927,7 @@ func (ab *appendBuffer) free() {
 func editorScroll() {
 	E.rx = 0
 	if E.cy < E.totalRows {
-		E.rx = editorRowCxToRx(&E.row[E.cy], E.cx)
+		E.rx = E.row[E.cy].cxToRx(E.cx)
 	}
 
 	if E.cy < E.rowOffset {
@@ -1053,8 +1038,8 @@ func editorDrawStatusBar(abuf *appendBuffer) {
 	var status string
 	var rstatus string
 	filename := "[No Name]"
-	if E.filename != nil {
-		filename = *E.filename
+	if E.filename != "" {
+		filename = E.filename
 		// Truncate filename to 20 characters if needed
 		if len(filename) > 20 {
 			filename = filename[:20]
@@ -1124,7 +1109,7 @@ func editorSetStatusMessage(format string, args ...any) {
 
 /*** input ***/
 
-func editorPrompt(prompt string, callback func([]byte, int)) *string {
+func editorPrompt(prompt string, callback func([]byte, int)) string {
 	bufSize := 128
 	buf := make([]byte, 0, bufSize)
 
@@ -1148,7 +1133,7 @@ func editorPrompt(prompt string, callback func([]byte, int)) *string {
 			if callback != nil {
 				callback(buf, key)
 			}
-			return nil
+			return ""
 
 		case '\r':
 			if len(buf) != 0 {
@@ -1156,8 +1141,7 @@ func editorPrompt(prompt string, callback func([]byte, int)) *string {
 				if callback != nil {
 					callback(buf, key)
 				}
-				result := string(buf)
-				return &result
+				return string(buf)
 			}
 
 		default:
@@ -1178,7 +1162,7 @@ func editorPrompt(prompt string, callback func([]byte, int)) *string {
 }
 
 func editorMoveCursor(key int) {
-	var row *erow
+	var row *editorRow
 	if E.cy >= E.totalRows {
 		row = nil
 	} else {
@@ -1304,14 +1288,16 @@ func initEditor() {
 	E.rowOffset = 0
 	E.colOffset = 0
 	E.totalRows = 0
-	E.row = make([]erow, 0)
+	E.row = make([]editorRow, 0)
 	E.dirty = 0
-	E.filename = nil
+	E.filename = ""
 	E.statusMessage = ""
 	E.statusMessageTime = time.Time{}
 	E.syntax = nil
 
-	if getWindowsSize(&E.screenRows, &E.screenCols) != nil {
+	var err error
+	E.screenRows, E.screenCols, err = getWindowsSize()
+	if err != nil {
 		die("getting window size")
 	}
 	E.screenRows -= 2
@@ -1327,7 +1313,7 @@ func main() {
 
 	initEditor()
 	if len(args) >= 1 {
-		editorOpen(&args[0])
+		editorOpen(args[0])
 	}
 
 	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find")
