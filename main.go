@@ -80,7 +80,7 @@ type editorSyntax struct {
 	flags                  int
 }
 
-type row struct {
+type erow struct {
 	idx             int
 	size            int
 	chars           []byte
@@ -98,7 +98,7 @@ type editorConfig struct {
 	screenRows        int
 	screenCols        int
 	numrows           int
-	row               []row // Changed from *erow to []erow (slice)
+	row               []erow
 	dirty             int
 	filename          *string
 	statusMessage     string
@@ -251,23 +251,6 @@ func getWindowsSize(rows *int, cols *int) error {
 	return err
 }
 
-func getCursorPosition(row *int, col *int) error {
-	// Move cursor to the bottom-right corner and read the cursor position
-	os.Stdout.Write([]byte(CURSOR_BOTTOM_RIGHT + CURSOR_GET_POSITION))
-	var buf [32]byte
-	n, err := os.Stdin.Read(buf[:])
-	if err != nil {
-		return err
-	}
-
-	// Parse the response
-	var r, c int
-	fmt.Sscanf(string(buf[:n]), CURSOR_RESPONSE_FORMAT, &r, &c)
-	*row = r - 1 // Convert to zero-based index
-	*col = c - 1 // Convert to zero-based index
-	return nil
-}
-
 /*** syntax highlighting ***/
 
 func isSeparator(c int) bool {
@@ -285,7 +268,7 @@ func isSeparator(c int) bool {
 	return false
 }
 
-func editorUpdateSyntax(row *row) {
+func editorUpdateSyntax(row *erow) {
 	row.hl = make([]int, row.rsize)
 	for i := range row.hl {
 		row.hl[i] = HL_NORMAL // Default to normal highlighting
@@ -484,7 +467,7 @@ func editorSelectSyntaxHighlight() {
 
 /*** row operations ***/
 
-func editorRowCxToRx(row *row, cx int) int {
+func editorRowCxToRx(row *erow, cx int) int {
 	rx := 0
 	for j := range cx {
 		if row.chars[j] == '\t' {
@@ -496,7 +479,7 @@ func editorRowCxToRx(row *row, cx int) int {
 	return rx
 }
 
-func editorRowRxToCx(row *row, rx int) int {
+func editorRowRxToCx(row *erow, rx int) int {
 	cur_rx := 0
 	var cx int
 	for cx = 0; cx < row.size; cx++ {
@@ -512,7 +495,7 @@ func editorRowRxToCx(row *row, rx int) int {
 	return cx
 }
 
-func editorUpdateRow(row *row) {
+func editorUpdateRow(row *erow) {
 	tabs := 0
 	for _, char := range row.chars {
 		if char == '\t' {
@@ -548,7 +531,7 @@ func editorInsertRow(at int, s []byte, rowlen int) {
 		return
 	}
 
-	E.row = append(E.row, row{})
+	E.row = append(E.row, erow{})
 	copy(E.row[at+1:], E.row[at:E.numrows])
 	for j := at + 1; j < E.numrows; j++ {
 		E.row[j].idx++
@@ -570,7 +553,7 @@ func editorInsertRow(at int, s []byte, rowlen int) {
 	E.dirty++
 }
 
-func editorFreeRow(erow *row) {
+func editorFreeRow(erow *erow) {
 	if erow == nil {
 		return
 	}
@@ -599,7 +582,7 @@ func editorDeleteRow(at int) {
 	E.dirty++
 }
 
-func editorRowInsertChar(erow *row, at int, c int) {
+func editorRowInsertChar(erow *erow, at int, c int) {
 	if at < 0 || at > erow.size {
 		at = erow.size
 	}
@@ -619,7 +602,7 @@ func editorRowInsertChar(erow *row, at int, c int) {
 	E.dirty++
 }
 
-func editorRowAppendString(erow *row, s []byte, slen int) {
+func editorRowAppendString(erow *erow, s []byte, slen int) {
 	newSize := erow.size + slen
 	newChars := make([]byte, newSize)
 
@@ -633,7 +616,7 @@ func editorRowAppendString(erow *row, s []byte, slen int) {
 	E.dirty++
 }
 
-func editorRowDeleteChar(erow *row, at int) {
+func editorRowDeleteChar(erow *erow, at int) {
 	if at < 0 || at >= erow.size {
 		return
 	}
@@ -1111,7 +1094,7 @@ func editorPrompt(prompt string, callback func([]byte, int)) *string {
 }
 
 func editorMoveCursor(key int) {
-	var row *row
+	var row *erow
 	if E.cy >= E.numrows {
 		row = nil
 	} else {
@@ -1237,7 +1220,7 @@ func initEditor() {
 	E.rowOffset = 0
 	E.colOffset = 0
 	E.numrows = 0
-	E.row = make([]row, 0)
+	E.row = make([]erow, 0)
 	E.dirty = 0
 	E.filename = nil
 	E.statusMessage = ""
