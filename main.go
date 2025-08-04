@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -143,13 +144,18 @@ var HLDB_ENTRIES = []editorSyntax{
 
 /*** terminal ***/
 
-// die prints an error message and exits the program
-func die(s string) {
+// die restores terminal, prints an error message and exits the program
+func die(format string, args ...any) {
 	restoreTerminal()
 	os.Stdout.Write([]byte(CLEAR_SCREEN))
 	os.Stdout.Write([]byte(CURSOR_HOME))
-	fmt.Fprintf(os.Stderr, "Error: %s\n", s)
+	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// showError displays an error message in the status bar instead of terminating
+func showError(format string, args ...any) {
+	editorSetStatusMessage("Warn: "+format, args...)
 }
 
 // Enable raw mode for terminal input.
@@ -157,12 +163,15 @@ func die(s string) {
 func enableRawMode() error {
 	// Check if stdin is a terminal
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return fmt.Errorf("stdin is not a terminal")
+		return errors.New("not running in a terminal")
 	}
 
 	var err error
 	E.originalState, err = term.MakeRaw(int(os.Stdin.Fd()))
-	return err
+	if err != nil {
+		return errors.New("enabling terminal raw mode: " + err.Error())
+	}
+	return nil
 }
 
 // Restore the original terminal state, disabling raw mode.
@@ -180,10 +189,10 @@ func editorReadKey() (int, error) {
 
 	for nread, err = os.Stdin.Read(buf); nread != 1; {
 		if nread == -1 && err != nil {
-			die("read key")
+			return 0, errors.New("reading keyboard input")
 		}
 		if err != nil {
-			return 0, err
+			return 0, errors.New("reading keyboard input")
 		}
 	}
 
@@ -745,11 +754,11 @@ func editorRowsToString() ([]byte, int) {
 	return []byte(result), len(result)
 }
 
-func editorOpen(filename string) {
+func editorOpen(filename string) error {
 	E.filename = filename
 	file, err := os.Open(filename)
 	if err != nil {
-		die("fopen")
+		return fmt.Errorf("could not open file '%s'", filename)
 	}
 	defer file.Close()
 
@@ -767,9 +776,10 @@ func editorOpen(filename string) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		die("reading file")
+		die("reading file: " + err.Error())
 	}
 	E.dirty = 0
+	return nil
 }
 
 func editorSave() {
@@ -1105,7 +1115,8 @@ func editorPrompt(prompt string, callback func([]byte, int)) string {
 
 		key, err := editorReadKey()
 		if err != nil {
-			die("reading key")
+			showError("%v", err)
+			continue // Try again instead of terminating
 		}
 
 		switch key {
@@ -1200,7 +1211,8 @@ func editorProcessKeypress() {
 
 	key, err := editorReadKey()
 	if err != nil {
-		die("reading key")
+		showError("%v", err)
+		return // Skip this keypress and continue
 	}
 
 	switch key {
@@ -1268,7 +1280,7 @@ func editorProcessKeypress() {
 
 /*** init ***/
 
-func initEditor() {
+func initEditor() error {
 	E.cx, E.cy = 0, 0
 	E.rx = 0
 	E.rowOffset = 0
@@ -1284,25 +1296,35 @@ func initEditor() {
 	var err error
 	E.screenRows, E.screenCols, err = getWindowsSize()
 	if err != nil {
-		die("getting window size")
+		return errors.New("getting window size")
 	}
 	E.screenRows -= 2
+	return nil
 }
 
 func main() {
 	args := os.Args[1:]
 	err := enableRawMode()
 	if err != nil {
-		die("enabling raw mode: " + err.Error())
+		die("enabling raw mode: %s", err.Error())
 	}
 	defer restoreTerminal()
 
-	initEditor()
-	if len(args) >= 1 {
-		editorOpen(args[0])
+	err = initEditor()
+	if err != nil {
+		die("initializing editor: %s", err.Error())
 	}
 
 	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find")
+
+	if len(args) >= 1 {
+		err = editorOpen(args[0])
+		if err != nil {
+			// File open errors are recoverable - show error and continue with empty file
+			showError("%v", err)
+			E.filename = args[0] // Keep the filename for saving later
+		}
+	}
 
 	for {
 		editorRefreshScreen()
