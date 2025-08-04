@@ -15,7 +15,7 @@ import (
 
 // Config Constants
 const (
-	GO_DITOR_VERSION       = "0.0.1"
+	GO_DITOR_VERSION       = "1.0.0"
 	TAB_STOP               = 4
 	CONTROL_SEQUENCE_WIDTH = 2
 	QUIT_TIMES             = 3
