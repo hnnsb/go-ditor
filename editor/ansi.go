@@ -1,4 +1,4 @@
-package main
+package editor
 
 // ANSI escape sequences for terminal control
 const (
