@@ -62,6 +62,7 @@ const (
 	EXPLORER_MODE
 	SEARCH_MODE
 	SAVE_MODE
+	HELP_MODE
 )
 
 // Check if the byte is a control character
@@ -1284,6 +1285,9 @@ func (e *Editor) ProcessKeypress() {
 
 	case withControlKey('r'):
 		e.Redraw()
+
+	case withControlKey('h'):
+		e.Help()
 
 	case BACKSPACE, DELETE_KEY:
 		if key == DELETE_KEY {
