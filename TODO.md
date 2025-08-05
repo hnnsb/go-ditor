@@ -1,5 +1,7 @@
 # Bugs
 
+- LF line ending on windows
+
 # Improvements
 
 ## Go Idiomatic Refactoring Opportunities

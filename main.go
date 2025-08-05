@@ -56,6 +56,14 @@ const (
 	HL_HIGHLIGHT_STRINGS = 1 << 1
 )
 
+// Editor modes
+const (
+	EDIT_MODE = iota
+	EXPLORER_MODE
+	SEARCH_MODE
+	SAVE_MODE
+)
+
 // Check if the byte is a control character
 func isControl(c byte) bool {
 	return c < 32 || c == 127
@@ -111,6 +119,7 @@ type Editor struct {
 	statusMessage     string
 	statusMessageTime time.Time
 	syntax            *editorSyntax
+	mode              int // e.g., "insert", "normal", "visual"
 	terminal          *Terminal
 }
 
@@ -298,9 +307,6 @@ func isSeparator(c int) bool {
 
 func (row *editorRow) UpdateSyntax(e *Editor) {
 	row.hl = make([]int, len(row.render))
-	for i := range row.hl { // uncessary but ensures hl is initialized
-		row.hl[i] = HL_NORMAL // Default to normal highlighting
-	}
 
 	if e.syntax == nil {
 		return
@@ -322,7 +328,7 @@ func (row *editorRow) UpdateSyntax(e *Editor) {
 
 	prevSep := true
 	var inString byte = 0
-	var inComment bool = row.idx > 0 && e.row[row.idx-1].hlOpenComment
+	var inComment bool = row.idx > 0 && row.idx-1 < len(e.row) && e.row[row.idx-1].hlOpenComment
 
 	for i := 0; i < len(row.render); {
 		c := row.render[i]
@@ -775,6 +781,14 @@ func (e *Editor) Open(filename string) error {
 	}
 	defer file.Close()
 
+	// Reset editor state, because we are opening a new file
+	e.row = make([]editorRow, 0)
+	e.totalRows = 0
+	e.cx = 0
+	e.cy = 0
+	e.rowOffset = 0
+	e.colOffset = 0
+	e.rx = 0
 	e.SelectSyntaxHighlight()
 
 	scanner := bufio.NewScanner(file)
@@ -1059,7 +1073,12 @@ func (e *Editor) DrawStatusBar(abuf *appendBuffer) {
 	if e.dirty > 0 {
 		dirtyFlag = "(modified)"
 	}
-	status = fmt.Sprintf("%.20s - %d lines %s %d", filename, e.totalRows, dirtyFlag, e.dirty)
+	switch e.mode {
+	case EXPLORER_MODE:
+		status = fmt.Sprintf("Explorer - %s %s", filename, dirtyFlag)
+	default:
+		status = fmt.Sprintf("%.20s - %d lines %s %d", filename, e.totalRows, dirtyFlag, e.dirty)
+	}
 	statusLen := min(len(status), e.screenCols)
 
 	filetype := "no ft"
@@ -1256,6 +1275,10 @@ func (e *Editor) ProcessKeypress() {
 			e.cx = len(e.row[e.cy].chars)
 		}
 
+	case withControlKey('e'):
+		e.Explorer()
+		e.mode = EDIT_MODE
+
 	case withControlKey('f'):
 		e.Find()
 
@@ -1320,6 +1343,7 @@ func (e *Editor) Init() error {
 	e.statusMessage = ""
 	e.statusMessageTime = time.Time{}
 	e.syntax = nil
+	e.mode = EDIT_MODE
 
 	var err error
 	e.screenRows, e.screenCols, err = getWindowsSize()
