@@ -2,7 +2,6 @@ package editor
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -74,19 +74,43 @@ const (
 	HELP_MODE
 )
 
-// Check if the byte is a control character
-func isControl(c byte) bool {
-	return c < 32 || c == 127
+// Check if the rune is a control character
+func isControl(r rune) bool {
+	return r < 32 || r == 127
 }
 
-// Check if the byte is a digit character
-func isDigit(c byte) bool {
-	return c >= '0' && c <= '9'
+// Check if the rune is a digit character
+func isDigit(r rune) bool {
+	return r >= '0' && r <= '9'
 }
 
 // Convert a character to its control key equivalent
-func withControlKey(c int) int {
-	return c & 0x1f // 0x1f is 31 in decimal, which is the control character range
+func withControlKey(c rune) rune {
+	return rune(int(c) & 0x1f) // 0x1f is 31 in decimal, which is the control character range
+}
+
+// runeIndexOf finds the index of the first occurrence of needle in haystack
+func runeIndexOf(haystack, needle []rune) int {
+	if len(needle) == 0 {
+		return 0
+	}
+	if len(needle) > len(haystack) {
+		return -1
+	}
+
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		found := true
+		for j := 0; j < len(needle); j++ {
+			if haystack[i+j] != needle[j] {
+				found = false
+				break
+			}
+		}
+		if found {
+			return i
+		}
+	}
+	return -1
 }
 
 /*** data ***/
@@ -103,8 +127,8 @@ type editorSyntax struct {
 
 type editorRow struct {
 	idx           int
-	chars         []byte
-	render        []byte
+	chars         []rune
+	render        []rune
 	hl            []int
 	hlOpenComment bool
 }
@@ -205,52 +229,41 @@ func (e *Editor) RestoreTerminal() {
 	}
 }
 
-func readKey() (int, error) {
+func readKey() (rune, error) {
 	buf := make([]byte, 1)
-	var nread int
-	var err error
+	n, err := os.Stdin.Read(buf)
 
-	for nread, err = os.Stdin.Read(buf); nread != 1; {
-		if nread == -1 && err != nil {
-			return 0, errors.New("reading keyboard input")
-		}
-		if err != nil {
-			return 0, errors.New("reading keyboard input")
-		}
+	if n != 1 || err != nil {
+		return 0, errors.New("reading keyboard input")
 	}
 
 	c := buf[0]
+
+	// Handle escape sequences (special keys)
 	if c == '\x1b' {
 		seq := make([]byte, 3)
-		if nread, err := os.Stdin.Read(seq[0:1]); nread != 1 || err != nil {
-			return '\x1b', nil
-		}
-		if nread, err := os.Stdin.Read(seq[1:2]); nread != 1 || err != nil {
-			return '\x1b', nil
+		if n, err := os.Stdin.Read(seq[0:2]); n != 2 || err != nil {
+			return '\x1b', nil // Return escape if we can't read sequence
 		}
 
 		switch seq[0] {
 		case '[':
 			if seq[1] >= '0' && seq[1] <= '9' {
-				if nread, err := os.Stdin.Read(seq[2:3]); nread != 1 || err != nil {
+				if n, err := os.Stdin.Read(seq[2:3]); n != 1 || err != nil {
 					return '\x1b', nil
 				}
 				if seq[2] == '~' {
 					switch seq[1] {
-					case '1':
+					case '1', '7':
 						return HOME_KEY, nil
 					case '3':
 						return DELETE_KEY, nil
-					case '4':
+					case '4', '8':
 						return END_KEY, nil
 					case '5':
 						return PAGE_UP, nil
 					case '6':
 						return PAGE_DOWN, nil
-					case '7':
-						return HOME_KEY, nil
-					case '8':
-						return END_KEY, nil
 					}
 				}
 			} else {
@@ -277,11 +290,46 @@ func readKey() (int, error) {
 				return END_KEY, nil
 			}
 		}
-		return '\x1b', nil
-	} else {
-		return int(c), nil
+		return '\x1b', nil // Unknown escape sequence, return escape
 	}
 
+	// For ASCII characters, return directly
+	if c < 128 {
+		return rune(c), nil
+	}
+
+	// Handle multi-byte UTF-8 characters
+	// Put the first byte back and read the full UTF-8 sequence
+	var utfBuf [4]byte
+	utfBuf[0] = c
+
+	// Determine how many more bytes we need
+	var totalBytes int
+	if c&0xE0 == 0xC0 {
+		totalBytes = 2
+	} else if c&0xF0 == 0xE0 {
+		totalBytes = 3
+	} else if c&0xF8 == 0xF0 {
+		totalBytes = 4
+	} else {
+		return utf8.RuneError, errors.New("invalid UTF-8 sequence")
+	}
+
+	// Read remaining bytes
+	if totalBytes > 1 {
+		n, err := os.Stdin.Read(utfBuf[1:totalBytes])
+		if n != totalBytes-1 || err != nil {
+			return utf8.RuneError, errors.New("reading UTF-8 sequence")
+		}
+	}
+
+	// Decode UTF-8
+	r, size := utf8.DecodeRune(utfBuf[:totalBytes])
+	if r == utf8.RuneError || size != totalBytes {
+		return utf8.RuneError, errors.New("invalid UTF-8 character")
+	}
+
+	return r, nil
 }
 
 func getWindowsSize() (int, int, error) {
@@ -328,17 +376,12 @@ func (row *editorRow) UpdateSyntax(e *Editor) {
 	scs := e.syntax.singlelineCommentStart
 	mcs := e.syntax.multilineCommentStart
 	mce := e.syntax.multilineCommentEnd
-
-	scsBytes := []byte(scs)
-	mcsBytes := []byte(mcs)
-	mceBytes := []byte(mce)
-
 	scsLen := len(scs)
 	mcsLen := len(mcs)
 	mceLen := len(mce)
 
 	prevSep := true
-	var inString byte = 0
+	var inString rune = 0
 	var inComment bool = row.idx > 0 && row.idx-1 < len(e.row) && e.row[row.idx-1].hlOpenComment
 
 	for i := 0; i < len(row.render); {
@@ -353,30 +396,14 @@ func (row *editorRow) UpdateSyntax(e *Editor) {
 			row.hl[i] = HL_CONTROL
 			row.hl[i+1] = HL_CONTROL
 
-			if i+1 < len(row.render) && row.render[i+1] == '[' {
-				j := i + 2
-				for j < len(row.render) {
-					ch := row.render[j]
-					row.hl[j] = HL_CONTROL
-					j++
-					// Final character (letter) ends the sequence
-					if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
-						break
-					}
-					if ch == '~' || ch == 'm' || ch == 'H' || ch == 'J' || ch == 'K' {
-						break
-					}
-				}
-				i = j
-			} else {
-				i += 2 // Skip both characters for simple control sequences
-			}
+			// TODO: Handle control sequences longer than 2 characters. Do I even print any?
+			i += 2
 			prevSep = true
 			continue
 		}
 
 		if scsLen > 0 && inString == 0 && !inComment {
-			if bytes.HasPrefix(row.render[i:], scsBytes) {
+			if strings.HasPrefix(string(row.render[i:]), scs) {
 				for j := i; j < len(row.render); j++ {
 					row.hl[j] = HL_COMMENT
 				}
@@ -386,22 +413,24 @@ func (row *editorRow) UpdateSyntax(e *Editor) {
 
 		if mcsLen > 0 && mceLen > 0 && inString == 0 {
 			if inComment {
+				// Inside multiline comment color end marker
 				row.hl[i] = HL_MLCOMMENT
-				if bytes.HasPrefix(row.render[i:], mceBytes) {
+				if strings.HasPrefix(string(row.render[i:]), mce) {
 					for j := range mceLen {
 						if i+j < len(row.render) {
 							row.hl[i+j] = HL_MLCOMMENT
 						} else {
-							break
+							break // Avoid out of bounds
 						}
 					}
 					inComment = false
-					i += mceLen // Skip the end of the multiline comment
+					i += mceLen
 					continue
 				}
 				i++ // Continue in the multiline comment
 				continue
-			} else if bytes.HasPrefix(row.render[i:], mcsBytes) {
+			} else if strings.HasPrefix(string(row.render[i:]), mcs) {
+				// Open multiline comment
 				inComment = true
 				for j := range mcsLen {
 					if i+j < len(row.render) {
@@ -410,7 +439,7 @@ func (row *editorRow) UpdateSyntax(e *Editor) {
 						break // Avoid out of bounds
 					}
 				}
-				i += mcsLen // Skip the start of the multiline comment
+				i += mcsLen
 				continue
 			}
 		}
@@ -453,7 +482,7 @@ func (row *editorRow) UpdateSyntax(e *Editor) {
 			for j, sublist := range keywords {
 				for _, keyword := range sublist {
 					klen := len(keyword)
-					if bytes.HasPrefix(row.render[i:], []byte(keyword)) {
+					if strings.HasPrefix(string(row.render[i:]), keyword) {
 						for k := range klen {
 							row.hl[i+k] = HL_KEYWORD1 + j
 						}
@@ -571,52 +600,47 @@ func (row *editorRow) rxToCx(rx int) int {
 }
 
 func (row *editorRow) Update(e *Editor) {
-	tabs := 0
-	controlSequences := 0
+	displayWidth := 0
+
 	for _, char := range row.chars {
 		if char == '\t' {
-			tabs++
+			displayWidth += TAB_STOP - (displayWidth % TAB_STOP)
 		} else if isControl(char) {
-			controlSequences++
+			displayWidth += 2 // ^C representation
+		} else {
+			displayWidth += 1
 		}
 	}
 
-	// Size: for worst case tab expansion
-	row.render = make([]byte, len(row.chars)+tabs*(TAB_STOP-1)+controlSequences*(CONTROL_SEQUENCE_WIDTH-1))
+	// Allocate render slice with estimated size
+	row.render = make([]rune, 0, displayWidth)
 
-	idx := 0
 	for _, char := range row.chars {
 		if char == '\t' {
-			row.render[idx] = ' '
-			idx++
 			// Add spaces until we reach the next TAB_STOP boundary
-			for idx%TAB_STOP != 0 {
-				row.render[idx] = ' '
-				idx++
+			row.render = append(row.render, ' ')
+			for len(row.render)%TAB_STOP != 0 {
+				row.render = append(row.render, ' ')
 			}
 		} else if isControl(char) {
-			row.render[idx] = '^'
-			idx++
+			row.render = append(row.render, '^')
 			switch char {
 			case 127: // DEL character
-				row.render[idx] = '?'
+				row.render = append(row.render, '?')
 			case '\x1b': // ESC character
-				row.render[idx] = '['
+				row.render = append(row.render, '[')
 			default:
-				row.render[idx] = char + '@' // Convert control character to printable
+				row.render = append(row.render, char+'@') // Convert control character to printable
 			}
-			idx++
 		} else {
-			row.render[idx] = char
-			idx++
+			row.render = append(row.render, char)
 		}
 	}
 
-	row.render = row.render[:idx] // Truncate to actual size
 	row.UpdateSyntax(e)
 }
 
-func (e *Editor) InsertRow(at int, s []byte, rowlen int) {
+func (e *Editor) InsertRow(at int, s []rune, rowlen int) {
 	if at < 0 || at > e.totalRows {
 		return
 	}
@@ -660,19 +684,19 @@ func (e *Editor) DeleteRow(at int) {
 	e.dirty++
 }
 
-func (row *editorRow) InsertChar(e *Editor, at int, c int) {
+func (row *editorRow) InsertChar(e *Editor, at int, r rune) {
 	if at < 0 || at > len(row.chars) {
 		at = len(row.chars)
 	}
 
-	// Insert character at position using slices
-	row.chars = append(row.chars[:at], append([]byte{byte(c)}, row.chars[at:]...)...)
+	// Insert rune at position using slices
+	row.chars = append(row.chars[:at], append([]rune{r}, row.chars[at:]...)...)
 
 	row.Update(e)
 	e.dirty++
 }
 
-func (row *editorRow) appendBytes(e *Editor, s []byte) {
+func (row *editorRow) appendRunes(e *Editor, s []rune) {
 	row.chars = append(row.chars, s...)
 
 	row.Update(e)
@@ -693,22 +717,22 @@ func (row *editorRow) deleteChar(e *Editor, at int) {
 
 /*** editor operations ***/
 
-func (e *Editor) InsertChar(c int) {
+func (e *Editor) InsertRune(r rune) {
 	if e.cy == e.totalRows {
-		e.InsertRow(e.totalRows, []byte(""), 0)
+		e.InsertRow(e.totalRows, []rune(""), 0)
 	}
-	e.row[e.cy].InsertChar(e, e.cx, c)
+	e.row[e.cy].InsertChar(e, e.cx, r)
 	e.cx++
 }
 
 func (e *Editor) InsertNewline() {
 	if e.cx == 0 {
-		e.InsertRow(e.cy, []byte(""), 0)
+		e.InsertRow(e.cy, []rune(""), 0)
 	} else {
 		row := &e.row[e.cy]
 
 		// Insert new row with text from cursor to end of line
-		remainingText := make([]byte, len(row.chars)-e.cx)
+		remainingText := make([]rune, len(row.chars)-e.cx)
 		copy(remainingText, row.chars[e.cx:])
 		e.InsertRow(e.cy+1, remainingText, len(row.chars)-e.cx)
 
@@ -735,7 +759,7 @@ func (e *Editor) DeleteChar() {
 		e.cx--
 	} else {
 		e.cx = len(e.row[e.cy-1].chars)
-		e.row[e.cy-1].appendBytes(e, row.chars)
+		e.row[e.cy-1].appendRunes(e, row.chars)
 		e.DeleteRow(e.cy) // Delete the current row after appending its content to the previous row
 		e.cy--            // Move cursor up to the previous row
 	}
@@ -755,7 +779,7 @@ func (e *Editor) RowsToString() ([]byte, int) {
 	buf.Grow(totalSize)
 
 	for _, row := range e.row {
-		buf.Write(row.chars)
+		buf.WriteString(string(row.chars))
 		buf.WriteString(lineEnding)
 	}
 
@@ -789,7 +813,8 @@ func (e *Editor) Open(filename string) error {
 			line = line[:len(line)-1]
 		}
 
-		e.InsertRow(e.totalRows, []byte(line), len(line))
+		runes := []rune(line)
+		e.InsertRow(e.totalRows, runes, len(runes))
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -889,7 +914,9 @@ func (e *Editor) FindCallback(query []byte, key int) {
 		}
 
 		row := &e.row[current]
-		match := bytes.Index(row.render, query)
+		// Convert query to runes for searching
+		queryRunes := []rune(string(query))
+		match := runeIndexOf(row.render, queryRunes)
 		if match != -1 {
 			lastMatch = current
 			e.cy = current
@@ -900,7 +927,7 @@ func (e *Editor) FindCallback(query []byte, key int) {
 			savedHl = make([]int, len(row.hl))
 			copy(savedHl, row.hl)
 			// Highlight the match
-			for k := match; k < match+len(query) && k < len(row.hl); k++ {
+			for k := match; k < match+len(queryRunes) && k < len(row.hl); k++ {
 				row.hl[k] = HL_MATCH
 			}
 			break
@@ -1002,7 +1029,7 @@ func (e *Editor) DrawRows(abuf *appendBuffer) {
 						}
 						currentStyle = 0
 					}
-					abuf.append([]byte{c})
+					abuf.append([]byte(string(c)))
 				} else {
 					// Get both color and style from the combined function
 					color, style := syntaxToGraphics(h)
@@ -1028,7 +1055,7 @@ func (e *Editor) DrawRows(abuf *appendBuffer) {
 						currentColor = color
 						abuf.append(fmt.Appendf(nil, "\x1b[%dm", color))
 					}
-					abuf.append([]byte{c})
+					abuf.append([]byte(string(c)))
 				}
 			}
 			// Reset all formatting at end of line
@@ -1141,41 +1168,52 @@ func (e *Editor) Prompt(prompt string, callback func([]byte, int)) string {
 			continue // Try again instead of terminating
 		}
 
+		// Handle special keys and control characters
 		switch key {
-		case DELETE_KEY, BACKSPACE, withControlKey('h'):
+		case DELETE_KEY, BACKSPACE:
 			if len(buf) != 0 {
 				buf = buf[:len(buf)-1]
 			}
+			if callback != nil {
+				callback(buf, int(key))
+			}
 
-		case '\x1b':
+		case '\x1b': // Escape
 			e.SetStatusMessage("")
 			if callback != nil {
-				callback(buf, key)
+				callback(buf, int(key))
 			}
 			return ""
 
-		case '\r':
+		case '\r': // Enter
 			if len(buf) != 0 {
 				e.SetStatusMessage("")
 				if callback != nil {
-					callback(buf, key)
+					callback(buf, int(key))
 				}
 				return string(buf)
 			}
 
 		default:
-			if !isControl(byte(key)) && key < 128 {
-				if len(buf) == bufSize-1 {
+			// Handle arrow keys for search navigation
+			if key == ARROW_LEFT || key == ARROW_RIGHT || key == ARROW_UP || key == ARROW_DOWN {
+				if callback != nil {
+					callback(buf, int(key))
+				}
+			} else if !isControl(key) {
+				// Regular character input
+				runeBytes := []byte(string(key))
+				if len(buf)+len(runeBytes) >= bufSize-1 {
 					bufSize *= 2
 					newBuf := make([]byte, len(buf), bufSize)
 					copy(newBuf, buf)
 					buf = newBuf
 				}
-				buf = append(buf, byte(key))
+				buf = append(buf, runeBytes...)
+				if callback != nil {
+					callback(buf, int(key))
+				}
 			}
-		}
-		if callback != nil {
-			callback(buf, key)
 		}
 	}
 }
@@ -1230,7 +1268,6 @@ func (e *Editor) MoveCursor(key int) {
 var quitTimes = QUIT_TIMES
 
 func (e *Editor) ProcessKeypress() {
-
 	key, err := readKey()
 	if err != nil {
 		e.ShowError("%v", err)
@@ -1238,25 +1275,6 @@ func (e *Editor) ProcessKeypress() {
 	}
 
 	switch key {
-	case '\r':
-		e.InsertNewline()
-
-	case withControlKey('q'):
-		if e.dirty > 0 && quitTimes > 0 {
-			e.SetStatusMessage("WARNING: File has unsaved changes. Press Ctrl-Q %d more times to quit.", quitTimes)
-			quitTimes--
-			return
-		}
-
-		e.RestoreTerminal()
-		os.Stdout.Write([]byte(CLEAR_SCREEN))
-		os.Stdout.Write([]byte(CURSOR_HOME))
-		fmt.Println("Exiting KIGO editor")
-		os.Exit(0)
-
-	case withControlKey('s'):
-		e.Save()
-
 	case HOME_KEY:
 		e.cx = 0
 
@@ -1265,23 +1283,11 @@ func (e *Editor) ProcessKeypress() {
 			e.cx = len(e.row[e.cy].chars)
 		}
 
-	case withControlKey('e'):
-		e.Explorer()
-		e.mode = EDIT_MODE
+	case DELETE_KEY:
+		e.MoveCursor(ARROW_RIGHT)
+		e.DeleteChar()
 
-	case withControlKey('f'):
-		e.Find()
-
-	case withControlKey('r'):
-		e.Redraw()
-
-	case withControlKey('h'):
-		e.Help()
-
-	case BACKSPACE, DELETE_KEY:
-		if key == DELETE_KEY {
-			e.MoveCursor(ARROW_RIGHT)
-		}
+	case BACKSPACE: // Handle backspace (127)
 		e.DeleteChar()
 
 	case PAGE_UP:
@@ -1297,14 +1303,49 @@ func (e *Editor) ProcessKeypress() {
 		}
 
 	case ARROW_LEFT, ARROW_RIGHT, ARROW_UP, ARROW_DOWN:
-		e.MoveCursor(key)
+		e.MoveCursor(int(key))
 
-	case withControlKey('l'):
-	case '\x1b':
-		break
+	// Control keys and special characters
+	case '\r': // Enter
+		e.InsertNewline()
+
+	case '\x1b': // Escape key
+		// Do nothing - just reset quit times
+
+	case withControlKey('q'):
+		if e.dirty > 0 && quitTimes > 0 {
+			e.SetStatusMessage("WARNING: File has unsaved changes. Press Ctrl-Q %d more times to quit.", quitTimes)
+			quitTimes--
+			return
+		}
+		e.RestoreTerminal()
+		os.Stdout.Write([]byte(CLEAR_SCREEN))
+		os.Stdout.Write([]byte(CURSOR_HOME))
+		fmt.Println("Exiting KIGO editor")
+		os.Exit(0)
+
+	case withControlKey('s'):
+		e.Save()
+
+	case withControlKey('e'):
+		e.Explorer()
+		e.mode = EDIT_MODE
+
+	case withControlKey('f'):
+		e.Find()
+
+	case withControlKey('r'):
+		e.Redraw()
+
+	case withControlKey('h'):
+		e.Help()
 
 	default:
-		e.InsertChar(key)
+		// Insert regular character (including Unicode)
+		// Skip control characters except those we explicitly handle
+		if !isControl(key) || key >= 128 {
+			e.InsertRune(key)
+		}
 	}
 
 	quitTimes = QUIT_TIMES // Reset quit times after processing a key

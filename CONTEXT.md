@@ -10,6 +10,7 @@
 - **Dependencies**:
   - `golang.org/x/term` v0.33.0 (terminal control)
   - `golang.org/x/sys` v0.34.0 (system calls)
+  - `github.com/mattn/go-runewidth` v0.0.16 (Unicode character width handling)
 - **Repository**: `github.com/hnnsb/kigo`
 
 ## Project Structure
@@ -80,12 +81,12 @@ type Editor struct {
     terminal        Terminal          // Terminal state
 }
 
-// Individual text row
+// Individual text row with Unicode support
 type editorRow struct {
     idx           int       // Row index
-    chars         []byte    // Raw characters
-    render        []byte    // Rendered characters (tabs expanded)
-    hl            []byte    // Syntax highlighting data
+    chars         []rune    // Raw characters (Unicode support)
+    render        []rune    // Rendered characters (tabs expanded, Unicode-aware)
+    hl            []int     // Syntax highlighting data
     hlOpenComment bool      // Multi-line comment state
 }
 
@@ -163,6 +164,37 @@ const (
 )
 ```
 
+## Unicode Support Implementation
+
+### Rune-Based Architecture
+
+KIGO now implements comprehensive Unicode support through a rune-based text handling system:
+
+**Input Handling**:
+
+- Simplified input system with single `readKey()` function returning runes
+- UTF-8 sequence detection and decoding
+- Proper handling of multi-byte characters (ä, ö, ü, emoji, etc.)
+
+**Text Storage**:
+
+- `[]rune` slices for character data instead of `[]byte`
+- Unicode-aware cursor positioning and text operations
+- Correct character counting and indexing
+
+**Display Rendering**:
+
+- Integration with `go-runewidth` for proper character width calculation
+- Support for wide characters (CJK, emoji)
+- ANSI escape sequence handling for terminal control
+
+**Key Features**:
+
+- Multi-byte character support (German umlauts, accented characters)
+- Emoji rendering and editing
+- CJK character support (Chinese, Japanese, Korean)
+- Correct cursor movement across Unicode boundaries
+
 ## Development Status
 
 ### Completed Refactoring (from TODO.md)
@@ -171,13 +203,15 @@ const (
 - ✅ Improved error handling patterns
 - ✅ Organized constants and naming conventions
 - ✅ Dependency injection for editor state
+- ✅ **Unicode Support**: Complete rune-based text handling
+- ✅ **String/Byte Handling**: Proper UTF-8 and Unicode character support
 
 ### Pending Improvements
 
 - 🔄 Interface definitions for terminal/file operations
 - 🔄 Memory management optimization
 - 🔄 Multi-package organization
-- 🔄 Unicode/UTF-8 support (umlauts: ä, ö, ü)
+- 🔄 **Enhanced Syntax Highlighting**: Rune-based syntax highlighting system
 - 🔄 Configuration file support
 - 🔄 Enhanced file explorer UI
 

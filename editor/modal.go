@@ -47,11 +47,15 @@ func (m *ModalManager) Show(mode int) {
 	for {
 		m.editor.RefreshScreen()
 
-		key, err := readKey()
+		input, err := readKey()
 		if err != nil {
 			m.editor.ShowError("%v", err)
 			continue
 		}
+
+		// The key is now directly a rune, convert to int for screen handlers
+		// TODO : Can i just convert to int?
+		key := int(input)
 
 		shouldClose, shouldRestore := m.screen.HandleKey(key, m.editor)
 		if shouldClose {

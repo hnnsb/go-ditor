@@ -9,7 +9,7 @@ func TestEditorRowDeleteChar(t *testing.T) {
 	// Create a test row
 	row := &editorRow{
 		idx:           0,
-		chars:         []byte("hello"),
+		chars:         []rune("hello"),
 		render:        nil,
 		hl:            nil,
 		hlOpenComment: false,
@@ -39,7 +39,7 @@ func TestEditorRowDeleteCharMultiple(t *testing.T) {
 	// Create a test row
 	row := &editorRow{
 		idx:           0,
-		chars:         []byte("abc"),
+		chars:         []rune("abc"),
 		render:        nil,
 		hl:            nil,
 		hlOpenComment: false,

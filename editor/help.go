@@ -46,7 +46,7 @@ func NewHelpScreen(editor *Editor) *HelpScreen {
 	for i, line := range helpContent {
 		content[i] = editorRow{
 			idx:   i,
-			chars: []byte(line),
+			chars: []rune(line),
 		}
 		content[i].Update(editor)
 	}

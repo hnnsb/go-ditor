@@ -86,7 +86,7 @@ func (ex *ExplorerScreen) createExplorerRows(files []os.DirEntry, currentDir str
 	headerText := fmt.Sprintf("=== File Explorer: %s ===", currentDir)
 	headerRow := editorRow{
 		idx:   0,
-		chars: []byte(headerText),
+		chars: []rune(headerText),
 	}
 	headerRow.Update(ex.editor)
 	explorerRows = append(explorerRows, headerRow)
@@ -96,7 +96,7 @@ func (ex *ExplorerScreen) createExplorerRows(files []os.DirEntry, currentDir str
 		parentText := "📂 .. (parent directory)"
 		parentRow := editorRow{
 			idx:   1,
-			chars: []byte(parentText),
+			chars: []rune(parentText),
 		}
 		parentRow.Update(ex.editor)
 		explorerRows = append(explorerRows, parentRow)
@@ -128,7 +128,7 @@ func (ex *ExplorerScreen) createFileDisplayRow(index int, file os.DirEntry) edit
 
 	return editorRow{
 		idx:   index + 2, // +2 to account for header and potential parent dir option
-		chars: []byte(fileInfo),
+		chars: []rune(fileInfo),
 	}
 }
 

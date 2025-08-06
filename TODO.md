@@ -5,8 +5,8 @@
 - Config via config file
 - beautify explorer screen
   - sort dirs first and files second
-- clear up []byte vs int vs string usage, what about runes
-  - allows umlauts ä, ö, ü etc. (Currently are displayed but cursors is messed up) (runes?)
+- [x] clear up []byte vs int vs string usage, switch to runes
+  - [x] allows umlauts ä, ö, ü etc. (Currently are displayed but cursors is messed up) (runes?)
 
 ## Go Idiomatic Refactoring Opportunities
 
@@ -84,10 +84,10 @@
 
 ### 11. String and Byte Handling
 
-- [ ] Use strings.Builder for string concatenation
-- [ ] Ensure consistent string/byte usage
-- [ ] Implement proper Unicode support
-- [ ] Use more efficient string manipulation methods
+- [x] Use strings.Builder for string concatenation
+- [x] Ensure consistent string/byte usage
+- [x] Implement proper Unicode support
+- [x] Use more efficient string manipulation methods
 
 ### 12. Syntax Highlighting Architecture
 
