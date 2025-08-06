@@ -1,4 +1,4 @@
-module github.com/hnnsb/go-ditor
+module github.com/hnnsb/kigo
 
 go 1.24.2
 

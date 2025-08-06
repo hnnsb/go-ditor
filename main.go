@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/hnnsb/go-ditor/editor"
+	"github.com/hnnsb/kigo/editor"
 )
 
 func main() {

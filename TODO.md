@@ -2,6 +2,12 @@
 
 # Improvements
 
+- Config via config file
+- beautify explorer screen
+  - sort dirs first and files second
+- clear up []byte vs int vs string usage, what about runes
+  - allows umlauts ä, ö, ü etc. (Currently are displayed but cursors is messed up) (runes?)
+
 ## Go Idiomatic Refactoring Opportunities
 
 ### 1. Error Handling & Recovery
