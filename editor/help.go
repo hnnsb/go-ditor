@@ -10,7 +10,7 @@ type HelpScreen struct {
 // NewHelpScreen creates a new help screen
 func NewHelpScreen(editor *Editor) *HelpScreen {
 	helpContent := []string{
-		"=== GO-DITOR HELP ===",
+		"=== KIGO HELP ===",
 		"",
 		"NAVIGATION:",
 		"  Arrow Keys       - Move cursor",
@@ -34,8 +34,8 @@ func NewHelpScreen(editor *Editor) *HelpScreen {
 		"  Ctrl+H           - Show this help",
 		"  Ctrl+R           - Redraw screen",
 		"",
-		"About GO-DITOR:",
-		fmt.Sprintf("  Version: %s", GO_DITOR_VERSION),
+		"About KIGO:",
+		fmt.Sprintf("  Version: %s", KIGO_VERSION),
 		"  A simple terminal-based text editor written in Go",
 		"",
 		"Press 'q' or Escape to close this help screen.",

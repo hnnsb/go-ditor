@@ -18,7 +18,7 @@ import (
 
 // Config Constants
 const (
-	GO_DITOR_VERSION       = "1.0.0"
+	KIGO_VERSION           = "1.0.0"
 	TAB_STOP               = 4
 	CONTROL_SEQUENCE_WIDTH = 2
 	QUIT_TIMES             = 3
@@ -964,7 +964,7 @@ func (e *Editor) DrawRows(abuf *appendBuffer) {
 		filerow := y + e.rowOffset
 		if filerow >= e.totalRows {
 			if e.totalRows == 0 && y == e.screenRows/3 {
-				welcome := "GO-DITOR editor -- version " + GO_DITOR_VERSION
+				welcome := "KIGO editor -- version " + KIGO_VERSION
 				welcomelen := min(len(welcome), e.screenCols)
 				padding := (e.screenCols - welcomelen) / 2
 				if padding > 0 {
@@ -1251,7 +1251,7 @@ func (e *Editor) ProcessKeypress() {
 		e.RestoreTerminal()
 		os.Stdout.Write([]byte(CLEAR_SCREEN))
 		os.Stdout.Write([]byte(CURSOR_HOME))
-		fmt.Println("Exiting GO-DITOR editor")
+		fmt.Println("Exiting KIGO editor")
 		os.Exit(0)
 
 	case withControlKey('s'):
