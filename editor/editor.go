@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -22,6 +23,14 @@ const (
 	CONTROL_SEQUENCE_WIDTH = 2
 	QUIT_TIMES             = 3
 )
+
+// getLineEnding returns the appropriate line ending for the current OS
+func getLineEnding() string {
+	if runtime.GOOS == "windows" {
+		return "\r\n"
+	}
+	return "\n"
+}
 
 // Key aliase
 const (
@@ -757,17 +766,18 @@ func (e *Editor) DeleteChar() {
 
 func (e *Editor) RowsToString() ([]byte, int) {
 	var buf strings.Builder
+	lineEnding := getLineEnding()
 
 	// Pre-calculate total size for efficiency
 	totalSize := 0
 	for _, row := range e.row {
-		totalSize += len(row.chars) + 1 // +1 for newline
+		totalSize += len(row.chars) + len(lineEnding) // +len(lineEnding) for line ending
 	}
 	buf.Grow(totalSize)
 
 	for _, row := range e.row {
 		buf.Write(row.chars)
-		buf.WriteByte('\n')
+		buf.WriteString(lineEnding)
 	}
 
 	result := buf.String()
