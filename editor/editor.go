@@ -94,7 +94,7 @@ func withControlKey(c int) int {
 type editorSyntax struct {
 	filetype               string
 	filematch              []string
-	keywords               []string
+	keywords               [][]string
 	singlelineCommentStart string
 	multilineCommentStart  string
 	multilineCommentEnd    string
@@ -139,11 +139,11 @@ var HLDB_ENTRIES = []editorSyntax{
 	{
 		filetype:  "c",
 		filematch: []string{".c", ".h", ".cpp"},
-		keywords: []string{
-			"switch", "if", "while", "for", "break", "continue", "return", "else",
-			"struct", "union", "typedef", "static", "enum", "class", "case",
-			"int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
-			"void|"},
+		keywords: [][]string{
+			{"switch", "if", "while", "for", "break", "continue", "return", "else",
+				"struct", "union", "typedef", "static", "enum", "class", "case"},
+			{"int", "long", "double", "float", "char", "unsigned", "signed", "void"},
+		},
 		singlelineCommentStart: "//",
 		multilineCommentStart:  "/*",
 		multilineCommentEnd:    "*/",
@@ -152,11 +152,12 @@ var HLDB_ENTRIES = []editorSyntax{
 	{
 		filetype:  "go",
 		filematch: []string{".go", ".mod", ".sum"},
-		keywords: []string{
-			"break", "case", "chan", "const", "continue", "default", "defer", "else",
-			"fallthrough", "for", "func|", "go", "goto", "if", "import", "interface",
-			"map", "package", "range", "return", "select", "struct", "switch", "type",
-			"var"},
+		keywords: [][]string{
+			{"break", "case", "chan", "const", "continue", "default", "defer", "else",
+				"fallthrough", "for", "go", "goto", "if", "import", "map", "package",
+				"range", "return", "select", "struct", "switch", "type", "var"},
+			{"interface", "func"},
+		},
 		singlelineCommentStart: "//",
 		multilineCommentStart:  "/*",
 		multilineCommentEnd:    "*/",
@@ -449,34 +450,13 @@ func (row *editorRow) UpdateSyntax(e *Editor) {
 
 		if prevSep {
 			// we entered a new word
-			for _, keyword := range keywords {
-				klen := len(keyword)
-				isKw2 := false
-				if klen > 0 && keyword[klen-1] == '|' {
-					isKw2 = true
-					klen-- // Exclude the trailing '|'
-				}
-
-				if klen > 0 && i+klen <= len(row.render) {
-					// Compare bytes directly without creating new slice
-					match := true
-					for k := 0; k < klen; k++ {
-						if row.render[i+k] != keyword[k] {
-							match = false
-							break
-						}
-					}
-
-					if match && (i+klen >= len(row.render) || isSeparator(int(row.render[i+klen]))) {
+			for j, sublist := range keywords {
+				for _, keyword := range sublist {
+					klen := len(keyword)
+					if bytes.HasPrefix(row.render[i:], []byte(keyword)) {
 						for k := range klen {
-							if isKw2 {
-								row.hl[i+k] = HL_KEYWORD2
-							} else {
-								row.hl[i+k] = HL_KEYWORD1
-							}
+							row.hl[i+k] = HL_KEYWORD1 + j
 						}
-						i += klen
-						goto nextChar // Found keyword, continue with next character
 					}
 				}
 			}
@@ -486,7 +466,6 @@ func (row *editorRow) UpdateSyntax(e *Editor) {
 			prevSep = isSeparator(int(c))
 		}
 		i++
-	nextChar:
 	}
 
 	changed := row.hlOpenComment != inComment
